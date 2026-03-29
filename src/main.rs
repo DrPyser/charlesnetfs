@@ -3,7 +3,7 @@ use std::io;
 use std::io::Read;
 mod pinger;
 
-const DEFAULT_PORT: u32 = 22;
+const DEFAULT_PORT: u32 = 111;
 
 fn main(){
     // [hostname] [timeout]
