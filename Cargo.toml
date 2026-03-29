@@ -1,0 +1,11 @@
+[package]
+name = "charlesnetfs"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+fuse = "0.3"
+serde = { version = "1.0", features = ["derive"] }
+serde_yaml = "0.9"
+ninep = "0.5"
+
