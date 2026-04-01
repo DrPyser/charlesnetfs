@@ -1,12 +1,11 @@
+use std::fmt::{Display, Formatter};
 use std::net::TcpStream;
 use std::time::{Duration, Instant};
-use std::fmt::{Display, Formatter};
 
 pub struct PingResult {
     pub latency_ms: Option<u64>,
     pub payload: String,
 }
-
 
 impl Display for PingResult {
     fn fmt(&self, f: &mut Formatter) -> Result<(), std::fmt::Error> {
@@ -32,7 +31,7 @@ pub fn ping(target: &str, timeout_ms: u64, payload: &str) -> Result<PingResult, 
                 payload: payload.to_string(),
             })
         }
-        Err(e) => Err(format!("{}", e))
+        Err(e) => Err(format!("{}", e)),
     }
 }
 

@@ -5,7 +5,7 @@ mod pinger;
 
 const DEFAULT_PORT: u32 = 111;
 
-fn main(){
+fn main() {
     // [hostname] [timeout]
     match &env::args().collect::<Vec<String>>()[1..] {
         [hostname, timeout] => {
@@ -16,12 +16,12 @@ fn main(){
             match result {
                 Err(e) => {
                     eprintln!("{}", e);
-                },
+                }
                 Ok(result) => {
                     println!("{}", result);
                 }
             }
-        },
+        }
         _ => {
             eprintln!("bad");
         }

@@ -29,11 +29,10 @@ impl TargetConfig {
 
 impl Config {
     pub fn load(path: &Path) -> Result<Self, String> {
-        let contents = fs::read_to_string(path)
-            .map_err(|e| format!("failed to read config: {}", e))?;
-        
-        serde_yaml::from_str(&contents)
-            .map_err(|e| format!("failed to parse config: {}", e))
+        let contents =
+            fs::read_to_string(path).map_err(|e| format!("failed to read config: {}", e))?;
+
+        serde_yaml::from_str(&contents).map_err(|e| format!("failed to parse config: {}", e))
     }
 }
 
@@ -65,12 +64,12 @@ mod tests {
         assert_eq!(config.global_timeout_ms, 5000);
         assert!(config.targets.contains_key("router"));
         assert!(config.targets.contains_key("nas"));
-        
+
         let router = &config.targets["router"];
         assert_eq!(router.addr, "192.168.1.1:22");
-        assert_eq!(router.timeout(5000), 5000);  // uses global default
-        
+        assert_eq!(router.timeout(5000), 5000); // uses global default
+
         let laptop = &config.targets["laptop"];
-        assert_eq!(laptop.timeout(5000), 3000);  // overrides global
+        assert_eq!(laptop.timeout(5000), 3000); // overrides global
     }
 }
