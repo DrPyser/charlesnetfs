@@ -1,5 +1,6 @@
 use crate::config::Config;
 use crate::pinger;
+use crate::UnixPath;
 use ninep::fs::{FileMeta, FileType, Mode, Perm, Stat};
 use ninep::sansio::server::ClientId;
 use ninep::sync::server::{ReadOutcome, Serve9p};
@@ -11,15 +12,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const QID_ROOT: u64 = 0;
 const IO_UNIT: ninep::fs::IoUnit = 4096;
 
-fn join_path(base: &str, child: &str) -> String {
-    let base = base.trim_end_matches('/');
-    format!("{}/{}", base, child)
-}
-
 pub struct PingFS {
     config: Config,
     ping_results: Mutex<BTreeMap<u64, String>>,
-    qid_cache: Mutex<BTreeMap<u64, String>>, // qid -> path
+    qid_cache: Mutex<BTreeMap<u64, UnixPath>>, // qid -> path
 }
 
 impl PingFS {
@@ -27,13 +23,13 @@ impl PingFS {
         let mut qid_cache = BTreeMap::new();
 
         // Root is always QID 0
-        qid_cache.insert(QID_ROOT, "/".to_string());
+        qid_cache.insert(QID_ROOT, UnixPath::ROOT);
 
         // Add all targets and their ping/config files
         for name in config.targets.keys() {
-            let dir_path = join_path("/", name);
-            let ping_path = join_path(&dir_path, "ping");
-            let config_path = join_path(&dir_path, "config");
+            let dir_path = UnixPath::ROOT.join(name);
+            let ping_path = dir_path.join("ping");
+            let config_path = dir_path.join("config");
 
             let dir_qid = qid_from_path(&dir_path);
             let ping_qid = qid_from_path(&ping_path);
@@ -53,12 +49,14 @@ impl PingFS {
 }
 
 /// Compute QID from path. Root "/" always returns QID_ROOT (0).
-fn qid_from_path(path: &str) -> u64 {
-    if path == "/" {
+fn qid_from_path(path: impl Into<UnixPath>) -> u64 {
+    let path: UnixPath = path.into();
+    let s = path.to_string();
+    if s == "/" {
         return QID_ROOT;
     }
 
-    let sum: u64 = path.bytes().map(|b| b as u64).sum();
+    let sum: u64 = s.bytes().map(|b| b as u64).sum();
     (sum % 0xFFFF_FFFF) + 100
 }
 
@@ -73,15 +71,17 @@ impl Serve9p for PingFS {
     fn walk(&self, _cid: ClientId, parent_qid: u64, child: &str, _uname: &str) -> Result<FileMeta> {
         if parent_qid == QID_ROOT {
             if self.config.targets.contains_key(child) {
-                let path = join_path("/", child);
+                let path = UnixPath::ROOT.join(child);
                 let qid = qid_from_path(&path);
                 Ok(FileMeta::dir(child, qid))
             } else {
                 Err("not found".into())
             }
         } else {
-            let parent_path = self.path_from_qid(parent_qid);
-            let path = join_path(&parent_path, child);
+            let parent_path = self
+                .path_from_qid(parent_qid)
+                .ok_or_else(|| "not found".to_string())?;
+            let path = parent_path.join(child);
             if self.is_valid_path(&path) {
                 let qid = qid_from_path(&path);
                 let ty = match child {
@@ -110,7 +110,9 @@ impl Serve9p for PingFS {
             return Ok(IO_UNIT);
         }
 
-        let path = self.path_from_qid(qid);
+        let path = self
+            .path_from_qid(qid)
+            .ok_or_else(|| "not found".to_string())?;
         if self.is_valid_path(&path) {
             return Ok(IO_UNIT);
         }
@@ -130,15 +132,13 @@ impl Serve9p for PingFS {
             return Ok(ReadOutcome::Immediate(Vec::new()));
         }
 
-        let path = self.path_from_qid(qid);
-        let p = std::path::Path::new(&path);
+        let path = self
+            .path_from_qid(qid)
+            .ok_or_else(|| "not found".to_string())?;
 
-        if p.ends_with("ping") {
-            let target_name = p
-                .parent()
-                .and_then(|pp| pp.file_name())
-                .and_then(|n| n.to_str())
-                .ok_or("invalid target name")?;
+        if path.ends_with("ping") {
+            let parent_path = path.parent().ok_or("invalid target name")?;
+            let target_name = parent_path.file_name().ok_or("invalid target name")?;
             let target = self
                 .config
                 .targets
@@ -177,12 +177,9 @@ impl Serve9p for PingFS {
             };
 
             Ok(ReadOutcome::Immediate(response.into_bytes()))
-        } else if p.ends_with("config") {
-            let target_name = p
-                .parent()
-                .and_then(|pp| pp.file_name())
-                .and_then(|n| n.to_str())
-                .ok_or("invalid target name")?;
+        } else if path.ends_with("config") {
+            let parent_path = path.parent().ok_or("invalid target name")?;
+            let target_name = parent_path.file_name().ok_or("invalid target name")?;
             let target = self
                 .config
                 .targets
@@ -204,11 +201,18 @@ impl Serve9p for PingFS {
         if qid == QID_ROOT {
             let mut stats = Vec::new();
             for name in self.config.targets.keys() {
-                let path = format!("/{}", name);
+                let path = UnixPath::ROOT.join(name);
                 let dir_qid = qid_from_path(&path);
                 stats.push(Stat {
                     fm: FileMeta::dir(name, dir_qid),
-                    perms: Perm::from_bits_truncate(0o755),
+                    perms: Perm::DIR
+                        | Perm::OWNER_READ
+                        | Perm::OWNER_WRITE
+                        | Perm::OWNER_EXEC
+                        | Perm::GROUP_READ
+                        | Perm::GROUP_EXEC
+                        | Perm::OTHER_READ
+                        | Perm::OTHER_EXEC,
                     n_bytes: 0,
                     last_accesses: SystemTime::now(),
                     last_modified: SystemTime::now(),
@@ -220,48 +224,54 @@ impl Serve9p for PingFS {
             return Ok(stats);
         }
 
-        let base_path = self.parent_path_from_qid(qid);
-        let bp = std::path::Path::new(&base_path);
-        let target_name = bp.file_name().and_then(|n| n.to_str());
-        if target_name
-            .map(|t| self.config.targets.contains_key(t))
-            .unwrap_or(false)
-        {
-            let ping_path = join_path(&base_path, "ping");
-            let config_path = join_path(&base_path, "config");
+        let base_path = self
+            .path_from_qid(qid)
+            .ok_or_else(|| "not found".to_string())?;
 
-            return Ok(vec![
-                Stat {
-                    fm: FileMeta::file("ping", qid_from_path(&ping_path)),
-                    perms: Perm::from_bits_truncate(0o644),
-                    n_bytes: 0,
-                    last_accesses: SystemTime::now(),
-                    last_modified: SystemTime::now(),
-                    owner: "root".to_string(),
-                    group: "root".to_string(),
-                    last_modified_by: "root".to_string(),
-                },
-                Stat {
-                    fm: FileMeta::file("config", qid_from_path(&config_path)),
-                    perms: Perm::from_bits_truncate(0o444),
-                    n_bytes: 0,
-                    last_accesses: SystemTime::now(),
-                    last_modified: SystemTime::now(),
-                    owner: "root".to_string(),
-                    group: "root".to_string(),
-                    last_modified_by: "root".to_string(),
-                },
-            ]);
+        if !self.is_valid_path(&base_path) {
+            return Err("not found".to_string());
         }
 
-        Err("not found".into())
+        if base_path.file_name().is_none() {
+            return Err("not found".to_string());
+        }
+
+        Ok(vec![
+            Stat {
+                fm: FileMeta::file("ping", qid_from_path(&base_path.join("ping"))),
+                perms: Perm::OWNER_READ | Perm::OWNER_WRITE | Perm::GROUP_READ | Perm::OTHER_READ,
+                n_bytes: 0,
+                last_accesses: SystemTime::now(),
+                last_modified: SystemTime::now(),
+                owner: "root".to_string(),
+                group: "root".to_string(),
+                last_modified_by: "root".to_string(),
+            },
+            Stat {
+                fm: FileMeta::file("config", qid_from_path(&base_path.join("config"))),
+                perms: Perm::OWNER_READ | Perm::GROUP_READ | Perm::OTHER_READ,
+                n_bytes: 0,
+                last_accesses: SystemTime::now(),
+                last_modified: SystemTime::now(),
+                owner: "root".to_string(),
+                group: "root".to_string(),
+                last_modified_by: "root".to_string(),
+            },
+        ])
     }
 
     fn stat(&self, _cid: ClientId, qid: u64, _uname: &str) -> Result<Stat> {
         if qid == QID_ROOT {
             return Ok(Stat {
                 fm: FileMeta::dir("", QID_ROOT),
-                perms: Perm::from_bits_truncate(0o755),
+                perms: Perm::DIR
+                    | Perm::OWNER_READ
+                    | Perm::OWNER_WRITE
+                    | Perm::OWNER_EXEC
+                    | Perm::GROUP_READ
+                    | Perm::GROUP_EXEC
+                    | Perm::OTHER_READ
+                    | Perm::OTHER_EXEC,
                 n_bytes: 0,
                 last_accesses: SystemTime::now(),
                 last_modified: SystemTime::now(),
@@ -271,13 +281,21 @@ impl Serve9p for PingFS {
             });
         }
 
-        let path = self.path_from_qid(qid);
-        let p = std::path::Path::new(&path);
+        let path = self
+            .path_from_qid(qid)
+            .ok_or_else(|| "not found".to_string())?;
 
-        if p.as_os_str() == "/" {
+        if path.is_root() {
             return Ok(Stat {
                 fm: FileMeta::dir("", QID_ROOT),
-                perms: Perm::from_bits_truncate(0o755),
+                perms: Perm::DIR
+                    | Perm::OWNER_READ
+                    | Perm::OWNER_WRITE
+                    | Perm::OWNER_EXEC
+                    | Perm::GROUP_READ
+                    | Perm::GROUP_EXEC
+                    | Perm::OTHER_READ
+                    | Perm::OTHER_EXEC,
                 n_bytes: 0,
                 last_accesses: SystemTime::now(),
                 last_modified: SystemTime::now(),
@@ -287,8 +305,8 @@ impl Serve9p for PingFS {
             });
         }
 
-        if p.is_absolute() && p.parent() == Some(std::path::Path::new("/")) {
-            let target_name = p.file_name().and_then(|n| n.to_str());
+        if path.parent().map(|p| p.is_root()).unwrap_or(false) {
+            let target_name = path.file_name();
             if target_name
                 .map(|t| self.config.targets.contains_key(t))
                 .unwrap_or(false)
@@ -299,7 +317,14 @@ impl Serve9p for PingFS {
                         ty: FileType::Directory,
                         qid,
                     },
-                    perms: Perm::from_bits_truncate(0o755),
+                    perms: Perm::DIR
+                        | Perm::OWNER_READ
+                        | Perm::OWNER_WRITE
+                        | Perm::OWNER_EXEC
+                        | Perm::GROUP_READ
+                        | Perm::GROUP_EXEC
+                        | Perm::OTHER_READ
+                        | Perm::OTHER_EXEC,
                     n_bytes: 0,
                     last_accesses: SystemTime::now(),
                     last_modified: SystemTime::now(),
@@ -310,14 +335,18 @@ impl Serve9p for PingFS {
             }
         }
 
-        let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        let name = path.file_name().unwrap_or("");
         let ty = if name == "ping" || name == "config" {
             FileType::Regular
         } else {
             return Err("not found".into());
         };
 
-        let perms = if name == "config" { 0o444u32 } else { 0o644u32 };
+        let perms = if name == "config" {
+            Perm::OWNER_READ | Perm::GROUP_READ | Perm::OTHER_READ
+        } else {
+            Perm::OWNER_READ | Perm::OWNER_WRITE | Perm::GROUP_READ | Perm::OTHER_READ
+        };
 
         Ok(Stat {
             fm: FileMeta {
@@ -325,7 +354,7 @@ impl Serve9p for PingFS {
                 ty,
                 qid,
             },
-            perms: Perm::from_bits_truncate(perms),
+            perms,
             n_bytes: 0,
             last_accesses: SystemTime::now(),
             last_modified: SystemTime::now(),
@@ -368,39 +397,19 @@ impl Serve9p for PingFS {
 }
 
 impl PingFS {
-    fn path_from_qid(&self, qid: u64) -> String {
-        self.qid_cache
-            .lock()
-            .unwrap()
-            .get(&qid)
-            .cloned()
-            .unwrap_or_else(|| "/".to_string())
+    fn path_from_qid(&self, qid: u64) -> Option<UnixPath> {
+        self.qid_cache.lock().unwrap().get(&qid).cloned()
     }
 
-    fn parent_path_from_qid(&self, qid: u64) -> String {
-        let path = self.path_from_qid(qid);
-        std::path::Path::new(&path)
-            .parent()
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "/".to_string())
-    }
+    fn is_valid_path(&self, path: &UnixPath) -> bool {
+        let components: Vec<_> = path.components().collect();
 
-    fn is_valid_path(&self, path: &str) -> bool {
-        use std::path::{Component, Path};
-
-        let components: Vec<_> = Path::new(path).components().collect();
-
-        match components[..] {
-            [Component::RootDir] => true,
-            [Component::RootDir, Component::Normal(name)] => self
-                .config
-                .targets
-                .contains_key(name.to_string_lossy().as_ref()),
-            [Component::RootDir, Component::Normal(name), Component::Normal(file)] => {
-                let target = name.to_string_lossy();
-                let sub = file.to_string_lossy();
-                self.config.targets.contains_key(target.as_ref())
-                    && matches!(sub.as_ref(), "ping" | "config")
+        match components.as_slice() {
+            [] => true,
+            [name] => self.config.targets.contains_key(&name.to_string()),
+            [name, file] => {
+                self.config.targets.contains_key(&name.to_string())
+                    && matches!(*file, "ping" | "config")
             }
             _ => false,
         }
@@ -541,54 +550,281 @@ mod tests {
     }
 
     #[test]
+    fn test_stat_root() {
+        let fs = PingFS::new(test_config());
+        let cid = dummy_client_id();
+
+        let result = fs.stat(cid, QID_ROOT, "user");
+        assert!(result.is_ok());
+        let stat = result.unwrap();
+        assert_eq!(stat.fm.ty, FileType::Directory);
+        assert_eq!(stat.fm.name, "");
+    }
+
+    #[test]
+    fn test_stat_target() {
+        let fs = PingFS::new(test_config());
+        let cid = dummy_client_id();
+
+        let router_qid = qid_from_path("/router");
+        let result = fs.stat(cid, router_qid, "user");
+        assert!(result.is_ok());
+        let stat = result.unwrap();
+        assert_eq!(stat.fm.ty, FileType::Directory);
+        assert_eq!(stat.fm.name, "router");
+    }
+
+    #[test]
+    fn test_stat_ping() {
+        let fs = PingFS::new(test_config());
+        let cid = dummy_client_id();
+
+        let ping_qid = qid_from_path("/router/ping");
+        let result = fs.stat(cid, ping_qid, "user");
+        assert!(result.is_ok());
+        let stat = result.unwrap();
+        assert_eq!(stat.fm.ty, FileType::Regular);
+        assert_eq!(stat.fm.name, "ping");
+    }
+
+    #[test]
+    fn test_stat_config() {
+        let fs = PingFS::new(test_config());
+        let cid = dummy_client_id();
+
+        let config_qid = qid_from_path("/router/config");
+        let result = fs.stat(cid, config_qid, "user");
+        assert!(result.is_ok());
+        let stat = result.unwrap();
+        assert_eq!(stat.fm.ty, FileType::Regular);
+        assert_eq!(stat.fm.name, "config");
+    }
+
+    #[test]
+    fn test_stat_invalid_qid() {
+        let fs = PingFS::new(test_config());
+        let cid = dummy_client_id();
+
+        let result = fs.stat(cid, 999999, "user");
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn test_is_valid_path_root() {
         let fs = PingFS::new(test_config());
-        assert!(fs.is_valid_path("/"));
+        assert!(fs.is_valid_path(&UnixPath::new("/")));
     }
 
     #[test]
     fn test_is_valid_path_target_dir() {
         let fs = PingFS::new(test_config());
-        assert!(fs.is_valid_path("/router"));
-        assert!(fs.is_valid_path("/nas"));
+        assert!(fs.is_valid_path(&UnixPath::new("/router")));
+        assert!(fs.is_valid_path(&UnixPath::new("/nas")));
     }
 
     #[test]
     fn test_is_valid_path_ping() {
         let fs = PingFS::new(test_config());
-        assert!(fs.is_valid_path("/router/ping"));
-        assert!(fs.is_valid_path("/nas/ping"));
+        assert!(fs.is_valid_path(&UnixPath::new("/router/ping")));
+        assert!(fs.is_valid_path(&UnixPath::new("/nas/ping")));
     }
 
     #[test]
     fn test_is_valid_path_config() {
         let fs = PingFS::new(test_config());
-        assert!(fs.is_valid_path("/router/config"));
-        assert!(fs.is_valid_path("/nas/config"));
+        assert!(fs.is_valid_path(&UnixPath::new("/router/config")));
+        assert!(fs.is_valid_path(&UnixPath::new("/nas/config")));
     }
 
     #[test]
     fn test_is_valid_path_invalid() {
         let fs = PingFS::new(test_config());
-        assert!(!fs.is_valid_path("/router/invalid"));
-        assert!(!fs.is_valid_path("/nonexistent"));
-        assert!(!fs.is_valid_path("/router/ping/extra"));
-        assert!(!fs.is_valid_path(""));
+        assert!(!fs.is_valid_path(&UnixPath::new("/router/invalid")));
+        assert!(!fs.is_valid_path(&UnixPath::new("/nonexistent")));
+        assert!(!fs.is_valid_path(&UnixPath::new("/router/ping/extra")));
     }
 
     #[test]
-    fn test_parent_path_from_qid() {
+    fn test_open_root() {
         let fs = PingFS::new(test_config());
+        let cid = dummy_client_id();
+
+        let result = fs.open(cid, QID_ROOT, Mode::FILE, "user");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_open_valid_target() {
+        let fs = PingFS::new(test_config());
+        let cid = dummy_client_id();
 
         let router_qid = qid_from_path("/router");
-        let parent = fs.parent_path_from_qid(router_qid);
-        assert_eq!(parent, "/");
+        let result = fs.open(cid, router_qid, Mode::FILE, "user");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_open_valid_ping() {
+        let fs = PingFS::new(test_config());
+        let cid = dummy_client_id();
 
         let ping_qid = qid_from_path("/router/ping");
-        let parent = fs.parent_path_from_qid(ping_qid);
-        assert_eq!(parent, "/router");
+        let result = fs.open(cid, ping_qid, Mode::FILE, "user");
+        assert!(result.is_ok());
+    }
 
-        let root_parent = fs.parent_path_from_qid(QID_ROOT);
-        assert_eq!(root_parent, "/");
+    #[test]
+    fn test_open_invalid_qid() {
+        let fs = PingFS::new(test_config());
+        let cid = dummy_client_id();
+
+        let result = fs.open(cid, 999999, Mode::FILE, "user");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_read_root() {
+        let fs = PingFS::new(test_config());
+        let cid = dummy_client_id();
+
+        let result = fs.read(cid, QID_ROOT, 0, 100, "user");
+        assert!(result.is_ok());
+        let outcome = result.unwrap();
+        match outcome {
+            ReadOutcome::Immediate(data) => assert!(data.is_empty()),
+            _ => panic!("expected Immediate"),
+        }
+    }
+
+    #[test]
+    fn test_read_config() {
+        let fs = PingFS::new(test_config());
+        let cid = dummy_client_id();
+
+        let config_qid = qid_from_path("/router/config");
+        let result = fs.read(cid, config_qid, 0, 100, "user");
+        assert!(result.is_ok());
+        let outcome = result.unwrap();
+        match outcome {
+            ReadOutcome::Immediate(data) => {
+                let content = String::from_utf8(data).unwrap();
+                assert!(content.contains("addr:"));
+                assert!(content.contains("timeout:"));
+            }
+            _ => panic!("expected Immediate"),
+        }
+    }
+
+    #[test]
+    fn test_read_ping() {
+        let fs = PingFS::new(test_config());
+        let cid = dummy_client_id();
+
+        let ping_qid = qid_from_path("/router/ping");
+        let result = fs.read(cid, ping_qid, 0, 100, "user");
+        assert!(result.is_ok());
+        let outcome = result.unwrap();
+        match outcome {
+            ReadOutcome::Immediate(data) => {
+                let content = String::from_utf8(data).unwrap();
+                assert!(content.starts_with("pong ") || content.starts_with("fail:"));
+            }
+            _ => panic!("expected Immediate"),
+        }
+    }
+
+    #[test]
+    fn test_read_invalid_qid() {
+        let fs = PingFS::new(test_config());
+        let cid = dummy_client_id();
+
+        let result = fs.read(cid, 999999, 0, 100, "user");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_read_dir_root() {
+        let fs = PingFS::new(test_config());
+        let cid = dummy_client_id();
+
+        let result = fs.read_dir(cid, QID_ROOT, "user");
+        assert!(result.is_ok());
+        let stats = result.unwrap();
+        assert_eq!(stats.len(), 2); // router and nas
+        assert!(stats.iter().any(|s| s.fm.name == "router"));
+        assert!(stats.iter().any(|s| s.fm.name == "nas"));
+    }
+
+    #[test]
+    fn test_read_dir_target() {
+        let fs = PingFS::new(test_config());
+        let cid = dummy_client_id();
+
+        let router_qid = qid_from_path("/router");
+        let result = fs.read_dir(cid, router_qid, "user");
+        assert!(result.is_ok());
+        let stats = result.unwrap();
+        assert_eq!(stats.len(), 2); // ping and config
+        assert!(stats.iter().any(|s| s.fm.name == "ping"));
+        assert!(stats.iter().any(|s| s.fm.name == "config"));
+    }
+
+    #[test]
+    fn test_read_dir_invalid_qid() {
+        let fs = PingFS::new(test_config());
+        let cid = dummy_client_id();
+
+        let result = fs.read_dir(cid, 999999, "user");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_create_unsupported() {
+        let fs = PingFS::new(test_config());
+        let cid = dummy_client_id();
+
+        let result = fs.create(cid, QID_ROOT, "newfile", Perm::FILE, Mode::FILE, "user");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not supported"));
+    }
+
+    #[test]
+    fn test_write_unsupported() {
+        let fs = PingFS::new(test_config());
+        let cid = dummy_client_id();
+
+        let result = fs.write(cid, QID_ROOT, 0, vec![], "user");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not supported"));
+    }
+
+    #[test]
+    fn test_remove_unsupported() {
+        let fs = PingFS::new(test_config());
+        let cid = dummy_client_id();
+
+        let result = fs.remove(cid, QID_ROOT, "user");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not supported"));
+    }
+
+    #[test]
+    fn test_write_stat_unsupported() {
+        let fs = PingFS::new(test_config());
+        let cid = dummy_client_id();
+
+        let stat = Stat {
+            fm: FileMeta::dir("", QID_ROOT),
+            perms: Perm::DIR,
+            n_bytes: 0,
+            last_accesses: SystemTime::now(),
+            last_modified: SystemTime::now(),
+            owner: "root".to_string(),
+            group: "root".to_string(),
+            last_modified_by: "root".to_string(),
+        };
+        let result = fs.write_stat(cid, QID_ROOT, stat, "user");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not supported"));
     }
 }
