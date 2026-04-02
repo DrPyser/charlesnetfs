@@ -124,8 +124,8 @@ impl Serve9p for PingFS {
         &self,
         _cid: ClientId,
         qid: u64,
-        _offset: usize,
-        _count: usize,
+        offset: usize,
+        count: usize,
         _uname: &str,
     ) -> Result<ReadOutcome> {
         if qid == QID_ROOT {
@@ -176,7 +176,13 @@ impl Serve9p for PingFS {
                 }
             };
 
-            Ok(ReadOutcome::Immediate(response.into_bytes()))
+            let data = response.into_bytes();
+            if offset >= data.len() {
+                return Ok(ReadOutcome::Immediate(Vec::new()));
+            }
+            let end = (offset + count).min(data.len());
+            let data = &data[offset..end];
+            Ok(ReadOutcome::Immediate(data.to_vec()))
         } else if path.ends_with("config") {
             let parent_path = path.parent().ok_or("invalid target name")?;
             let target_name = parent_path.file_name().ok_or("invalid target name")?;
@@ -191,7 +197,14 @@ impl Serve9p for PingFS {
                 target.addr,
                 target.timeout(self.config.global_timeout_ms)
             );
-            Ok(ReadOutcome::Immediate(config_text.into_bytes()))
+
+            let data = config_text.into_bytes();
+            if offset >= data.len() {
+                return Ok(ReadOutcome::Immediate(Vec::new()));
+            }
+            let end = (offset + count).min(data.len());
+            let data = &data[offset..end];
+            Ok(ReadOutcome::Immediate(data.to_vec()))
         } else {
             Err("not found".into())
         }
@@ -826,5 +839,45 @@ mod tests {
         let result = fs.write_stat(cid, QID_ROOT, stat, "user");
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("not supported"));
+    }
+
+    #[test]
+    fn test_read_config_with_offset() {
+        let fs = PingFS::new(test_config());
+        let cid = dummy_client_id();
+
+        let config_qid = qid_from_path("/router/config");
+        let result = fs.read(cid, config_qid, 0, 100, "user").unwrap();
+        let ReadOutcome::Immediate(full_data) = result else {
+            panic!()
+        };
+        let full_content = String::from_utf8(full_data).unwrap();
+
+        let result = fs.read(cid, config_qid, 5, 100, "user").unwrap();
+        let ReadOutcome::Immediate(partial_data) = result else {
+            panic!()
+        };
+        let partial_content = String::from_utf8(partial_data).unwrap();
+
+        assert_eq!(&full_content[5..], partial_content);
+    }
+
+    #[test]
+    fn test_read_config_offset_returns_empty_at_end() {
+        let fs = PingFS::new(test_config());
+        let cid = dummy_client_id();
+
+        let config_qid = qid_from_path("/router/config");
+        let result = fs.read(cid, config_qid, 0, 100, "user").unwrap();
+        let ReadOutcome::Immediate(data) = result else {
+            panic!()
+        };
+        let len = data.len();
+
+        let result = fs.read(cid, config_qid, len, 100, "user").unwrap();
+        let ReadOutcome::Immediate(data) = result else {
+            panic!()
+        };
+        assert!(data.is_empty());
     }
 }
