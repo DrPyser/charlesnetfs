@@ -1,29 +1,61 @@
-use std::env;
-use std::io;
-use std::io::Read;
-mod pinger;
+use charlesnetfs::{config::Config, server::PingFS};
+use clap::Parser;
+use ninep::sync::server::{socket_path, Server};
+use signal_hook::consts::signal::{SIGINT, SIGTERM};
+use signal_hook::iterator::Signals;
+use std::path::PathBuf;
 
-const DEFAULT_PORT: u32 = 111;
+#[derive(Parser, Debug)]
+#[command(name = "charlesnetfs")]
+#[command(about = "9P network filesystem exposing host ping results", long_about = None)]
+struct Args {
+    #[arg(short, long, default_value = "config.yaml")]
+    config: PathBuf,
 
-fn main() {
-    // [hostname] [timeout]
-    match &env::args().collect::<Vec<String>>()[1..] {
-        [hostname, timeout] => {
-            let mut data = String::new();
-            let _ = io::stdin().read_to_string(&mut data);
-            let address = format!("{}:{}", hostname, DEFAULT_PORT);
-            let result = pinger::ping(address.as_str(), timeout.parse().unwrap(), &data);
-            match result {
-                Err(e) => {
-                    eprintln!("{}", e);
-                }
-                Ok(result) => {
-                    println!("{}", result);
-                }
-            }
-        }
-        _ => {
-            eprintln!("bad");
-        }
+    #[arg(short, long)]
+    socket: Option<PathBuf>,
+
+    #[arg(short, long)]
+    namespace: Option<PathBuf>,
+}
+
+fn resolve_socket_path(socket: Option<PathBuf>, namespace: Option<PathBuf>) -> PathBuf {
+    if let Some(socket) = socket {
+        return socket;
     }
+
+    if let Some(ns) = namespace {
+        return ns.join("charlesnetfs");
+    }
+
+    socket_path("charlesnetfs")
+}
+
+fn main() -> Result<(), String> {
+    let args = Args::parse();
+
+    let config = Config::load(&args.config).map_err(|e| {
+        format!(
+            "failed to load config from {}: {}",
+            args.config.to_string_lossy(),
+            e
+        )
+    })?;
+
+    let fs = PingFS::new(config);
+
+    let socket_path = resolve_socket_path(args.socket, args.namespace);
+
+    eprintln!("Starting 9P server at {:?}", socket_path);
+
+    let server = Server::new(fs);
+    let _handle = server.serve_socket("charlesnetfs");
+
+    let mut signals = Signals::new(&[SIGINT, SIGTERM]).map_err(|e| e.to_string())?;
+    for _ in signals.forever() {
+        break;
+    }
+
+    let _ = std::fs::remove_file(&socket_path);
+    std::process::exit(0);
 }
