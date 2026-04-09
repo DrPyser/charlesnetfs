@@ -34,7 +34,14 @@ fn resolve_socket_path(socket: Option<PathBuf>, namespace: Option<PathBuf>) -> P
 fn main() -> Result<(), String> {
     let args = Args::parse();
 
-    let config = Config::load(&args.config).map_err(|e| {
+    let file = std::fs::File::open(&args.config).map_err(|e| {
+        format!(
+            "failed to open config file {}: {}",
+            args.config.display(),
+            e
+        )
+    })?;
+    let config = Config::load(file).map_err(|e| {
         format!(
             "failed to load config from {}: {}",
             args.config.to_string_lossy(),

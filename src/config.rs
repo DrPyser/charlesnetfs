@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::fs;
-use std::path::Path;
+use std::io::Read;
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Config {
@@ -28,11 +27,8 @@ impl TargetConfig {
 }
 
 impl Config {
-    pub fn load(path: &Path) -> Result<Self, String> {
-        let contents =
-            fs::read_to_string(path).map_err(|e| format!("failed to read config: {}", e))?;
-
-        serde_yaml::from_str(&contents).map_err(|e| format!("failed to parse config: {}", e))
+    pub fn load<R: Read>(reader: R) -> Result<Self, String> {
+        serde_yaml::from_reader(reader).map_err(|e| format!("failed to parse config: {}", e))
     }
 }
 
@@ -60,7 +56,18 @@ mod tests {
 
     #[test]
     fn test_config_load() {
-        let config = Config::load(Path::new("config.yaml")).unwrap();
+        let yaml = r#"
+global_timeout_ms: 5000
+targets:
+  router:
+    addr: 192.168.1.1:22
+  nas:
+    addr: 192.168.1.100:5000
+  laptop:
+    addr: 10.0.0.5:22
+    timeout_ms: 3000
+"#;
+        let config = Config::load(yaml.as_bytes()).unwrap();
         assert_eq!(config.global_timeout_ms, 5000);
         assert!(config.targets.contains_key("router"));
         assert!(config.targets.contains_key("nas"));
