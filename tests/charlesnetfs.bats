@@ -34,7 +34,7 @@ teardown() {
 }
 
 start_server() {
-    cargo run -- -c config.yaml -n "$NAMESPACE" >&2 &
+    cargo run -- -c tests/data/config.yaml -n "$NAMESPACE" >&2 &
     SERVER_PID=$!
     echo $SERVER_PID >&2
     jobs >&2
