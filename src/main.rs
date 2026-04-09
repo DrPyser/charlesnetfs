@@ -49,7 +49,7 @@ fn main() -> Result<(), String> {
     eprintln!("Starting 9P server at {:?}", socket_path);
 
     let server = Server::new(fs);
-    let _handle = server.serve_socket("charlesnetfs");
+    let _handle = server.serve_socket_with_custom_path(socket_path.clone());
 
     let mut signals = Signals::new(&[SIGINT, SIGTERM]).map_err(|e| e.to_string())?;
     for _ in signals.forever() {
