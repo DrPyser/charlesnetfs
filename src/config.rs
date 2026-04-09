@@ -1,9 +1,9 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Config {
     #[serde(default = "default_timeout")]
     pub global_timeout_ms: u64,
@@ -14,7 +14,7 @@ fn default_timeout() -> u64 {
     5000
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct TargetConfig {
     pub addr: String,
     #[serde(default)]

@@ -1,31 +1,44 @@
 use crate::config::Config;
 use crate::pinger;
 use crate::UnixPath;
-use ninep::fs::{FileMeta, FileType, Mode, Perm, Stat};
+use ninep::fs::{FileMeta, FileType, Mode, Perm, Stat, WStat};
 use ninep::sansio::server::ClientId;
 use ninep::sync::server::{ReadOutcome, Serve9p};
 use ninep::Result;
 use std::collections::BTreeMap;
 use std::sync::Mutex;
+use std::sync::RwLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const QID_ROOT: u64 = 0;
+const QID_CONFIG: u64 = 1;
 const IO_UNIT: ninep::fs::IoUnit = 4096;
 
 pub struct PingFS {
-    config: Config,
+    config: RwLock<Config>,
     ping_results: Mutex<BTreeMap<u64, String>>,
     qid_cache: Mutex<BTreeMap<u64, UnixPath>>, // qid -> path
 }
 
 impl PingFS {
     pub fn new(config: Config) -> Self {
-        let mut qid_cache = BTreeMap::new();
+        let fs = Self {
+            config: RwLock::new(config),
+            ping_results: Mutex::new(BTreeMap::new()),
+            qid_cache: Mutex::new(BTreeMap::new()),
+        };
+        fs.rebuild_qid_cache();
+        fs
+    }
 
-        // Root is always QID 0
-        qid_cache.insert(QID_ROOT, UnixPath::ROOT);
+    fn rebuild_qid_cache(&self) {
+        let mut cache = self.qid_cache.lock().unwrap();
+        let config = self.config.read().unwrap();
 
-        // Add all targets and their ping/config files
+        cache.clear();
+        cache.insert(QID_ROOT, UnixPath::ROOT);
+        cache.insert(QID_CONFIG, UnixPath::ROOT.join("config"));
+
         for name in config.targets.keys() {
             let dir_path = UnixPath::ROOT.join(name);
             let ping_path = dir_path.join("ping");
@@ -35,25 +48,22 @@ impl PingFS {
             let ping_qid = qid_from_path(&ping_path);
             let config_qid = qid_from_path(&config_path);
 
-            qid_cache.insert(dir_qid, dir_path);
-            qid_cache.insert(ping_qid, ping_path);
-            qid_cache.insert(config_qid, config_path);
-        }
-
-        Self {
-            config,
-            ping_results: Mutex::new(BTreeMap::new()),
-            qid_cache: Mutex::new(qid_cache),
+            cache.insert(dir_qid, dir_path);
+            cache.insert(ping_qid, ping_path);
+            cache.insert(config_qid, config_path);
         }
     }
 }
 
-/// Compute QID from path. Root "/" always returns QID_ROOT (0).
+// Compute QID from path. Root "/" always returns QID_ROOT (0).
 fn qid_from_path(path: impl Into<UnixPath>) -> u64 {
     let path: UnixPath = path.into();
     let s = path.to_string();
     if s == "/" {
         return QID_ROOT;
+    }
+    if s == "/config" {
+        return QID_CONFIG;
     }
 
     let sum: u64 = s.bytes().map(|b| b as u64).sum();
@@ -70,7 +80,10 @@ fn current_timestamp() -> u64 {
 impl Serve9p for PingFS {
     fn walk(&self, _cid: ClientId, parent_qid: u64, child: &str, _uname: &str) -> Result<FileMeta> {
         if parent_qid == QID_ROOT {
-            if self.config.targets.contains_key(child) {
+            if child == "config" {
+                return Ok(FileMeta::file("config", QID_CONFIG));
+            }
+            if self.config.read().unwrap().targets.contains_key(child) {
                 let path = UnixPath::ROOT.join(child);
                 let qid = qid_from_path(&path);
                 Ok(FileMeta::dir(child, qid))
@@ -132,6 +145,18 @@ impl Serve9p for PingFS {
             return Ok(ReadOutcome::Immediate(Vec::new()));
         }
 
+        if qid == QID_CONFIG {
+            let config = self.config.read().unwrap();
+            let yaml = serde_yaml::to_string(&*config).map_err(|e| e.to_string())?;
+            let data = yaml.into_bytes();
+            if offset >= data.len() {
+                return Ok(ReadOutcome::Immediate(Vec::new()));
+            }
+            let end = (offset + count).min(data.len());
+            let data = &data[offset..end];
+            return Ok(ReadOutcome::Immediate(data.to_vec()));
+        }
+
         let path = self
             .path_from_qid(qid)
             .ok_or_else(|| "not found".to_string())?;
@@ -139,14 +164,11 @@ impl Serve9p for PingFS {
         if path.ends_with("ping") {
             let parent_path = path.parent().ok_or("invalid target name")?;
             let target_name = parent_path.file_name().ok_or("invalid target name")?;
-            let target = self
-                .config
-                .targets
-                .get(target_name)
-                .ok_or("target not found")?;
+            let config = self.config.read().unwrap();
+            let target = config.targets.get(target_name).ok_or("target not found")?;
 
             let addr = &target.addr;
-            let timeout = target.timeout(self.config.global_timeout_ms);
+            let timeout = target.timeout(self.config.read().unwrap().global_timeout_ms);
             let counter = self
                 .ping_results
                 .lock()
@@ -186,16 +208,13 @@ impl Serve9p for PingFS {
         } else if path.ends_with("config") {
             let parent_path = path.parent().ok_or("invalid target name")?;
             let target_name = parent_path.file_name().ok_or("invalid target name")?;
-            let target = self
-                .config
-                .targets
-                .get(target_name)
-                .ok_or("target not found")?;
+            let config = self.config.read().unwrap();
+            let target = config.targets.get(target_name).ok_or("target not found")?;
 
             let config_text = format!(
                 "addr: {}\ntimeout: {}ms\n",
                 target.addr,
-                target.timeout(self.config.global_timeout_ms)
+                target.timeout(self.config.read().unwrap().global_timeout_ms)
             );
 
             let data = config_text.into_bytes();
@@ -213,7 +232,24 @@ impl Serve9p for PingFS {
     fn read_dir(&self, _cid: ClientId, qid: u64, _uname: &str) -> Result<Vec<Stat>> {
         if qid == QID_ROOT {
             let mut stats = Vec::new();
-            for name in self.config.targets.keys() {
+
+            // Add /config file at root
+            stats.push(Stat {
+                fm: FileMeta::file("config", QID_CONFIG),
+                perms: Perm::FILE
+                    | Perm::OWNER_READ
+                    | Perm::OWNER_WRITE
+                    | Perm::GROUP_READ
+                    | Perm::OTHER_READ,
+                n_bytes: 0,
+                last_accesses: SystemTime::now(),
+                last_modified: SystemTime::now(),
+                owner: "root".to_string(),
+                group: "root".to_string(),
+                last_modified_by: "root".to_string(),
+            });
+
+            for name in self.config.read().unwrap().targets.keys() {
                 let path = UnixPath::ROOT.join(name);
                 let dir_qid = qid_from_path(&path);
                 stats.push(Stat {
@@ -321,7 +357,7 @@ impl Serve9p for PingFS {
         if path.parent().map(|p| p.is_root()).unwrap_or(false) {
             let target_name = path.file_name();
             if target_name
-                .map(|t| self.config.targets.contains_key(t))
+                .map(|t| self.config.read().unwrap().targets.contains_key(t))
                 .unwrap_or(false)
             {
                 return Ok(Stat {
@@ -355,8 +391,10 @@ impl Serve9p for PingFS {
             return Err("not found".into());
         };
 
-        let perms = if name == "config" {
+        let perms = if name == "config" && !path.parent().map(|p| p.is_root()).unwrap_or(false) {
             Perm::OWNER_READ | Perm::GROUP_READ | Perm::OTHER_READ
+        } else if name == "config" {
+            Perm::OWNER_READ | Perm::OWNER_WRITE | Perm::GROUP_READ | Perm::OTHER_READ
         } else {
             Perm::OWNER_READ | Perm::OWNER_WRITE | Perm::GROUP_READ | Perm::OTHER_READ
         };
@@ -392,12 +430,33 @@ impl Serve9p for PingFS {
     fn write(
         &self,
         _cid: ClientId,
-        _qid: u64,
-        _offset: usize,
-        _data: Vec<u8>,
+        qid: u64,
+        offset: usize,
+        data: Vec<u8>,
         _uname: &str,
     ) -> Result<usize> {
-        Err("not supported".into())
+        if qid == QID_CONFIG {
+            if offset > 0 {
+                return Err("partial writes not supported".into());
+            }
+
+            let len = data.len();
+            let yaml = String::from_utf8(data).map_err(|_| "invalid utf-8")?;
+
+            let new_config: Config =
+                serde_yaml::from_str(&yaml).map_err(|e| format!("invalid config: {}", e))?;
+
+            if new_config.targets.is_empty() {
+                return Err("config must have at least one target".into());
+            }
+
+            *self.config.write().unwrap() = new_config;
+            self.rebuild_qid_cache();
+
+            Ok(len)
+        } else {
+            Err("not supported".into())
+        }
     }
 
     fn remove(&self, _cid: ClientId, _qid: u64, _uname: &str) -> Result<()> {
@@ -419,9 +478,19 @@ impl PingFS {
 
         match components.as_slice() {
             [] => true,
-            [name] => self.config.targets.contains_key(&name.to_string()),
+            ["config"] => true,
+            [name] => self
+                .config
+                .read()
+                .unwrap()
+                .targets
+                .contains_key(&name.to_string()),
             [name, file] => {
-                self.config.targets.contains_key(&name.to_string())
+                self.config
+                    .read()
+                    .unwrap()
+                    .targets
+                    .contains_key(&name.to_string())
                     && matches!(*file, "ping" | "config")
             }
             _ => false,
@@ -614,6 +683,28 @@ mod tests {
     }
 
     #[test]
+    fn test_stat_global_config_is_writable() {
+        let fs = PingFS::new(test_config());
+        let cid = dummy_client_id();
+
+        let config_qid = qid_from_path("/config");
+        let result = fs.stat(cid, config_qid, "user").unwrap();
+
+        assert!(result.perms.intersects(Perm::OWNER_WRITE));
+    }
+
+    #[test]
+    fn test_stat_target_config_is_readonly() {
+        let fs = PingFS::new(test_config());
+        let cid = dummy_client_id();
+
+        let config_qid = qid_from_path("/router/config");
+        let result = fs.stat(cid, config_qid, "user").unwrap();
+
+        assert!(!result.perms.intersects(Perm::OWNER_WRITE));
+    }
+
+    #[test]
     fn test_stat_invalid_qid() {
         let fs = PingFS::new(test_config());
         let cid = dummy_client_id();
@@ -763,9 +854,10 @@ mod tests {
         let result = fs.read_dir(cid, QID_ROOT, "user");
         assert!(result.is_ok());
         let stats = result.unwrap();
-        assert_eq!(stats.len(), 2); // router and nas
+        assert_eq!(stats.len(), 3); // config, router and nas
         assert!(stats.iter().any(|s| s.fm.name == "router"));
         assert!(stats.iter().any(|s| s.fm.name == "nas"));
+        assert!(stats.iter().any(|s| s.fm.name == "config"));
     }
 
     #[test]
@@ -842,7 +934,7 @@ mod tests {
     }
 
     #[test]
-    fn test_read_config_with_offset() {
+    fn test_read_target_config_with_offset() {
         let fs = PingFS::new(test_config());
         let cid = dummy_client_id();
 
@@ -863,7 +955,7 @@ mod tests {
     }
 
     #[test]
-    fn test_read_config_offset_returns_empty_at_end() {
+    fn test_read_target_config_offset_returns_empty_at_end() {
         let fs = PingFS::new(test_config());
         let cid = dummy_client_id();
 
@@ -879,5 +971,171 @@ mod tests {
             panic!()
         };
         assert!(data.is_empty());
+    }
+
+    #[test]
+    fn test_read_config_file() {
+        let fs = PingFS::new(test_config());
+        let cid = dummy_client_id();
+
+        let config_qid = qid_from_path("/config");
+        let result = fs.read(cid, config_qid, 0, 1000, "user");
+        assert!(result.is_ok());
+        let outcome = result.unwrap();
+        match outcome {
+            ReadOutcome::Immediate(data) => {
+                let content = String::from_utf8(data).unwrap();
+                assert!(content.contains("global_timeout_ms:"));
+                assert!(content.contains("targets:"));
+                assert!(content.contains("router:"));
+                assert!(content.contains("nas:"));
+            }
+            _ => panic!("expected Immediate"),
+        }
+    }
+
+    #[test]
+    fn test_read_config_file_with_offset() {
+        let fs = PingFS::new(test_config());
+        let cid = dummy_client_id();
+
+        let config_qid = qid_from_path("/config");
+        let result = fs.read(cid, config_qid, 0, 1000, "user").unwrap();
+        let ReadOutcome::Immediate(full_data) = result else {
+            panic!()
+        };
+        let full_content = String::from_utf8(full_data).unwrap();
+
+        let result = fs.read(cid, config_qid, 5, 1000, "user").unwrap();
+        let ReadOutcome::Immediate(partial_data) = result else {
+            panic!()
+        };
+        let partial_content = String::from_utf8(partial_data).unwrap();
+
+        assert_eq!(&full_content[5..], partial_content);
+    }
+
+    #[test]
+    fn test_write_config_valid() {
+        let fs = PingFS::new(test_config());
+        let cid = dummy_client_id();
+        let config_qid = qid_from_path("/config");
+
+        let yaml = "global_timeout_ms: 3000\ntargets:\n  router:\n    addr: 10.0.0.1:22\n";
+        let result = fs.write(cid, config_qid, 0, yaml.as_bytes().to_vec(), "user");
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), yaml.len());
+
+        let config = fs.config.read().unwrap();
+        assert_eq!(config.global_timeout_ms, 3000);
+        assert!(config.targets.contains_key("router"));
+        assert_eq!(config.targets["router"].addr, "10.0.0.1:22");
+
+        let qid_cache = fs.qid_cache.lock().unwrap();
+        assert!(qid_cache.values().any(|p| p.to_string() == "/router"));
+        assert!(qid_cache.values().any(|p| p.to_string() == "/router/ping"));
+        assert!(qid_cache
+            .values()
+            .any(|p| p.to_string() == "/router/config"));
+    }
+
+    #[test]
+    fn test_write_config_invalid_yaml() {
+        let fs = PingFS::new(test_config());
+        let cid = dummy_client_id();
+        let config_qid = qid_from_path("/config");
+
+        let orig_global = fs.config.read().unwrap().global_timeout_ms;
+        let orig_targets = fs.config.read().unwrap().targets.len();
+        let orig_cache_len = fs.qid_cache.lock().unwrap().len();
+
+        let yaml = "invalid: yaml: content:";
+        let result = fs.write(cid, config_qid, 0, yaml.as_bytes().to_vec(), "user");
+
+        assert!(result.is_err());
+
+        let config = fs.config.read().unwrap();
+        assert_eq!(config.global_timeout_ms, orig_global);
+        assert_eq!(config.targets.len(), orig_targets);
+        assert_eq!(fs.qid_cache.lock().unwrap().len(), orig_cache_len);
+    }
+
+    #[test]
+    fn test_write_config_empty_targets() {
+        let fs = PingFS::new(test_config());
+        let cid = dummy_client_id();
+        let config_qid = qid_from_path("/config");
+
+        let orig_global = fs.config.read().unwrap().global_timeout_ms;
+        let orig_targets = fs.config.read().unwrap().targets.len();
+        let orig_cache_len = fs.qid_cache.lock().unwrap().len();
+
+        let yaml = "global_timeout_ms: 5000\ntargets:\n";
+        let result = fs.write(cid, config_qid, 0, yaml.as_bytes().to_vec(), "user");
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("at least one target"));
+
+        let config = fs.config.read().unwrap();
+        assert_eq!(config.global_timeout_ms, orig_global);
+        assert_eq!(config.targets.len(), orig_targets);
+        assert_eq!(fs.qid_cache.lock().unwrap().len(), orig_cache_len);
+    }
+
+    #[test]
+    fn test_write_config_with_offset_fails() {
+        let fs = PingFS::new(test_config());
+        let cid = dummy_client_id();
+        let config_qid = qid_from_path("/config");
+
+        let orig_global = fs.config.read().unwrap().global_timeout_ms;
+        let orig_targets = fs.config.read().unwrap().targets.len();
+        let orig_cache_len = fs.qid_cache.lock().unwrap().len();
+
+        let yaml = "global_timeout_ms: 3000\ntargets:\n  router:\n    addr: 10.0.0.1:22\n";
+        let result = fs.write(cid, config_qid, 5, yaml.as_bytes().to_vec(), "user");
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("partial writes not supported"));
+
+        let config = fs.config.read().unwrap();
+        assert_eq!(config.global_timeout_ms, orig_global);
+        assert_eq!(config.targets.len(), orig_targets);
+        assert_eq!(fs.qid_cache.lock().unwrap().len(), orig_cache_len);
+    }
+
+    #[test]
+    fn test_read_dir_includes_config() {
+        let fs = PingFS::new(test_config());
+        let cid = dummy_client_id();
+
+        let result = fs.read_dir(cid, QID_ROOT, "user").unwrap();
+        let has_config = result.iter().any(|s| s.fm.name == "config");
+        assert!(has_config, "root should contain /config");
+    }
+
+    #[test]
+    fn test_read_dir_shows_new_targets_after_reload() {
+        let fs = PingFS::new(test_config());
+        let cid = dummy_client_id();
+        let config_qid = qid_from_path("/config");
+
+        // Initial config: router, nas
+        let result = fs.read_dir(cid, QID_ROOT, "user").unwrap();
+        let names: Vec<_> = result.iter().map(|s| s.fm.name.as_str()).collect();
+        assert!(names.contains(&"router"));
+        assert!(names.contains(&"nas"));
+        assert!(!names.contains(&"laptop"));
+
+        // Reload config with new target
+        let yaml = "global_timeout_ms: 5000\ntargets:\n  router:\n    addr: 192.168.1.1:22\n  nas:\n    addr: 192.168.1.100:5000\n  laptop:\n    addr: 10.0.0.5:22\n";
+        fs.write(cid, config_qid, 0, yaml.as_bytes().to_vec(), "user")
+            .unwrap();
+
+        // Verify new target appears
+        let result = fs.read_dir(cid, QID_ROOT, "user").unwrap();
+        let names: Vec<_> = result.iter().map(|s| s.fm.name.as_str()).collect();
+        assert!(names.contains(&"laptop"));
     }
 }
