@@ -1,5 +1,9 @@
 #!/usr/bin/env bats
 
+setup_file() {
+    export BATS_TEST_TIMEOUT=30
+}
+
 setup() {
     SOCKET_PATH="/tmp/ns.${USER}.:0/charlesnetfs"
     rm -f "$SOCKET_PATH"
