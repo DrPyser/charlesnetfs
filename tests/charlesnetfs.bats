@@ -103,6 +103,57 @@ mount_fuse() {
     [[ "$result" == *"timeout:"* ]]
 }
 
+@test "reads root config file" {
+    start_server
+    wait_for_socket
+
+    result=$(9 9p read charlesnetfs/config)
+
+    [[ "$result" == *"global_timeout_ms:"* ]]
+    [[ "$result" == *"router:"* ]]
+}
+
+@test "global config file is writable" {
+    start_server
+    wait_for_socket
+
+    result=$(9 9p stat charlesnetfs/config)
+
+    [[ "$result" == *'m 0644'* ]]
+}
+
+@test "target config file is read-only" {
+    start_server
+    wait_for_socket
+
+    result=$(9 9p stat charlesnetfs/router/config)
+
+    [[ "$result" == *'m 0444'* ]]
+}
+
+@test "hot-reload config via write" {
+    start_server
+    wait_for_socket
+
+    result=$(9 9p ls charlesnetfs/)
+    [[ "$result" == *"router"* ]]
+    [[ "$result" == *"nas"* ]]
+    [[ "$result" == *"laptop"* ]]
+
+    new_config="global_timeout_ms: 3000
+targets:
+  newhost:
+    addr: 10.0.0.99:22
+"
+    echo "$new_config" | 9 9p write charlesnetfs/config
+
+    result=$(9 9p ls charlesnetfs/)
+    [[ "$result" == *"newhost"* ]]
+    [[ "$result" != *"router"* ]]
+    [[ "$result" != *"nas"* ]]
+    [[ "$result" != *"laptop"* ]]
+}
+
 @test "server shutdown cleans up socket" {
     start_server
     wait_for_socket
