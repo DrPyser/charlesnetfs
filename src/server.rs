@@ -463,8 +463,8 @@ impl Serve9p for PingFS {
         Err("not supported".into())
     }
 
-    fn write_stat(&self, _cid: ClientId, _qid: u64, _stat: Stat, _uname: &str) -> Result<()> {
-        Err("not supported".into())
+    fn write_stat(&self, _cid: ClientId, _qid: u64, _stat: WStat, _uname: &str) -> Result<()> {
+        Ok(())
     }
 }
 
@@ -914,23 +914,25 @@ mod tests {
     }
 
     #[test]
-    fn test_write_stat_unsupported() {
+    fn test_write_stat_no_change_succeeds() {
+        use ninep::sansio::protocol::RawStat;
         let fs = PingFS::new(test_config());
         let cid = dummy_client_id();
-
-        let stat = Stat {
-            fm: FileMeta::dir("", QID_ROOT),
-            perms: Perm::DIR,
-            n_bytes: 0,
-            last_accesses: SystemTime::now(),
-            last_modified: SystemTime::now(),
-            owner: "root".to_string(),
-            group: "root".to_string(),
-            last_modified_by: "root".to_string(),
+        let raw = RawStat {
+            name: String::new(),
+            mode: u32::MAX,
+            length: u64::MAX,
+            atime: u32::MAX,
+            mtime: u32::MAX,
+            gid: String::new(),
+            muid: String::new(),
+            ..Default::default()
         };
-        let result = fs.write_stat(cid, QID_ROOT, stat, "user");
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("not supported"));
+
+        let wstat = WStat::from(raw);
+
+        let result = fs.write_stat(cid, QID_ROOT, wstat, "user");
+        assert!(result.is_ok());
     }
 
     #[test]
