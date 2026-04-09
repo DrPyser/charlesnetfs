@@ -5,35 +5,57 @@ setup_file() {
 }
 
 setup() {
-    SOCKET_PATH="/tmp/ns.${USER}.:0/charlesnetfs"
-    rm -f "$SOCKET_PATH"
+    TESTS_TMPDIR=$(mktemp -d /tmp/charlesnetfs-tests-XXXXXX)
+    export NAMESPACE="$TESTS_TMPDIR/ns"
+    mkdir -p "$NAMESPACE"
+    export MOUNT_DIR="$TESTS_TMPDIR/mnt"
+    mkdir -p "$MOUNT_DIR"
     export TMPDIR="${TMPDIR:-/tmp}"
 }
 
 teardown() {
     if [ -f "$TMPDIR/charlesnetfs.pid" ]; then
-        kill -INT $(cat "$TMPDIR/charlesnetfs.pid") 2>/dev/null || true
+        for sig in INT TERM KILL; do
+            if ps -p $(cat "$TMPDIR/charlesnetfs.pid"); then
+                kill -$sig $(cat "$TMPDIR/charlesnetfs.pid") >&2
+                sleep 0.5 &
+                wait -n $! $(cat "$TMPDIR/charlesnetfs.pid")
+            else
+                break
+            fi
+        done
         rm -f "$TMPDIR/charlesnetfs.pid"
     fi
     sleep 0.5
-    rm -f "$SOCKET_PATH"
+    if mountpoint -q "$MOUNT_DIR" 2>/dev/null; then
+        fusermount -u "$MOUNT_DIR" 2>/dev/null || true
+    fi
+    rm -rf "$TESTS_TMPDIR"
 }
 
 start_server() {
-    cargo run -- -c config.yaml > /dev/null 2>&1 &
+    cargo run -- -c config.yaml -n "$NAMESPACE" >&2 &
     SERVER_PID=$!
+    echo $SERVER_PID >&2
+    jobs >&2
     echo $SERVER_PID > "$TMPDIR/charlesnetfs.pid"
+}
 
+wait_for_socket() {
     for i in {1..20}; do
-        [ -S "$SOCKET_PATH" ] && return 0
+        test -S "$NAMESPACE/charlesnetfs" && return 0
+        echo "No socket at path $NAMESPACE/charlesnetfs" >&2
+        ls -l "$NAMESPACE" >&2
         sleep 0.25
     done
     return 1
 }
 
-wait_for_socket() {
+mount_fuse() {
+    # -A 0 ensures no fuse caching, important for hot-reload
+    9 9pfuse -A 0 -D unix!"$NAMESPACE/charlesnetfs" "$MOUNT_DIR" 2>/tmp/9pfuse.log
     for i in {1..10}; do
-        [ -S "$SOCKET_PATH" ] && return 0
+        mountpoint -q "$MOUNT_DIR" && return 0
         sleep 0.25
     done
     return 1
@@ -47,14 +69,14 @@ wait_for_socket() {
 @test "socket file is created" {
     start_server
     wait_for_socket
-    [ -S "$SOCKET_PATH" ]
+    [ -S "$NAMESPACE/charlesnetfs" ]
 }
 
 @test "lists configured targets" {
     start_server
     wait_for_socket
 
-    result=$(9 9p -a unix!$SOCKET_PATH ls)
+    result=$(9 9p ls charlesnetfs/)
 
     [[ "$result" == *"router"* ]]
     [[ "$result" == *"nas"* ]]
@@ -65,7 +87,7 @@ wait_for_socket() {
     start_server
     wait_for_socket
 
-    result=$(9 9p -a unix!$SOCKET_PATH ls router/)
+    result=$(9 9p ls charlesnetfs/router/)
 
     [[ "$result" == *"config"* ]]
     [[ "$result" == *"ping"* ]]
@@ -75,7 +97,7 @@ wait_for_socket() {
     start_server
     wait_for_socket
 
-    result=$(9 9p -a unix!$SOCKET_PATH read router/config)
+    result=$(9 9p read charlesnetfs/router/config)
 
     [[ "$result" == *"addr:"* ]]
     [[ "$result" == *"timeout:"* ]]
@@ -88,5 +110,5 @@ wait_for_socket() {
     kill -INT $(cat "$TMPDIR/charlesnetfs.pid")
     wait $(cat "$TMPDIR/charlesnetfs.pid") 2>/dev/null
 
-    [ ! -e "$SOCKET_PATH" ]
+    [ ! -e "$NAMESPACE/charlesnetfs" ]
 }
