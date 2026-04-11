@@ -14,8 +14,6 @@ format:
 
 check:
 	cargo check
-
-clippy:
 	cargo clippy -- -D warnings
 
 clean:
