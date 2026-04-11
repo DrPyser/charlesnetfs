@@ -287,7 +287,7 @@ impl Serve9p for PingFS {
 
         Ok(vec![
             Stat {
-                fm: FileMeta::file("ping", qid_from_path(&base_path.join("ping"))),
+                fm: FileMeta::file("ping", qid_from_path(base_path.join("ping"))),
                 perms: Perm::OWNER_READ | Perm::OWNER_WRITE | Perm::GROUP_READ | Perm::OTHER_READ,
                 n_bytes: 0,
                 last_accesses: SystemTime::now(),
@@ -297,7 +297,7 @@ impl Serve9p for PingFS {
                 last_modified_by: "root".to_string(),
             },
             Stat {
-                fm: FileMeta::file("config", qid_from_path(&base_path.join("config"))),
+                fm: FileMeta::file("config", qid_from_path(base_path.join("config"))),
                 perms: Perm::OWNER_READ | Perm::GROUP_READ | Perm::OTHER_READ,
                 n_bytes: 0,
                 last_accesses: SystemTime::now(),
@@ -393,9 +393,8 @@ impl Serve9p for PingFS {
 
         let perms = if name == "config" && !path.parent().map(|p| p.is_root()).unwrap_or(false) {
             Perm::OWNER_READ | Perm::GROUP_READ | Perm::OTHER_READ
-        } else if name == "config" {
-            Perm::OWNER_READ | Perm::OWNER_WRITE | Perm::GROUP_READ | Perm::OTHER_READ
         } else {
+            // includes /config
             Perm::OWNER_READ | Perm::OWNER_WRITE | Perm::GROUP_READ | Perm::OTHER_READ
         };
 
@@ -484,13 +483,13 @@ impl PingFS {
                 .read()
                 .unwrap()
                 .targets
-                .contains_key(&name.to_string()),
+                .contains_key(*name),
             [name, file] => {
                 self.config
                     .read()
                     .unwrap()
                     .targets
-                    .contains_key(&name.to_string())
+                    .contains_key(*name)
                     && matches!(*file, "ping" | "config")
             }
             _ => false,

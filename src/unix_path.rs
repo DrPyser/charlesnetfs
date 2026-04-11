@@ -22,13 +22,6 @@ impl UnixPath {
         Self::ROOT
     }
 
-    pub fn to_string(&self) -> String {
-        if self.0.is_empty() {
-            return "/".to_string();
-        }
-        format!("/{}", self.0.join("/"))
-    }
-
     pub fn is_absolute(&self) -> bool {
         true
     }
@@ -60,7 +53,7 @@ impl UnixPath {
     }
 
     pub fn ends_with(&self, component: &str) -> bool {
-        self.0.last().map_or(false, |s| s == component)
+        self.0.last().is_some_and(|s| s == component)
     }
 
     pub fn components(&self) -> impl Iterator<Item = &str> {
@@ -118,7 +111,12 @@ impl<'a> From<&'a UnixPath> for Vec<&'a str> {
 
 impl fmt::Display for UnixPath {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.to_string())
+        if self.0.is_empty() {
+            write!(f, "/")
+        }
+        else {
+            write!(f, "/{}", self.0.join("/"))
+        }
     }
 }
 

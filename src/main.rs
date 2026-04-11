@@ -58,10 +58,10 @@ fn main() -> Result<(), String> {
     let server = Server::new(fs);
     let _handle = server.serve_socket_with_custom_path(socket_path.clone());
 
-    let mut signals = Signals::new(&[SIGINT, SIGTERM]).map_err(|e| e.to_string())?;
-    for _ in signals.forever() {
-        break;
-    }
+    let mut signals = Signals::new([SIGINT, SIGTERM]).map_err(|e| e.to_string())?;
+
+    // blocks until signal
+    let _ = signals.forever().next();
 
     let _ = std::fs::remove_file(&socket_path);
     std::process::exit(0);
