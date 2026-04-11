@@ -38,6 +38,7 @@ pub fn ping(target: &str, timeout_ms: u64, payload: &str) -> Result<PingResult, 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::TcpListener;
 
     #[test]
     fn test_ping_result_display() {
@@ -73,17 +74,17 @@ mod tests {
 
     #[test]
     fn test_ping_localhost() {
-        //rpcbind very likely enabled
-        let result = ping("127.0.0.1:111", 20, "ping");
-        match result {
-            Ok(r) => {
-                assert!(r.latency_ms.is_some());
-                assert_eq!(r.payload, "ping");
-            }
-            Err(e) => {
-                panic!("{}", e);
-                // assert!(e.contains("Connection refused") || e.contains("timed out"));
-            }
-        }
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                let _ = listener.accept();
+            });
+
+            let result = ping(&format!("127.0.0.1:{}", port), 100, "ping");
+            assert!(result.is_ok());
+            assert!(result.unwrap().latency_ms.is_some());
+        });
     }
 }
