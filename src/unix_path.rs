@@ -113,8 +113,7 @@ impl fmt::Display for UnixPath {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.0.is_empty() {
             write!(f, "/")
-        }
-        else {
+        } else {
             write!(f, "/{}", self.0.join("/"))
         }
     }

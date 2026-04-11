@@ -478,18 +478,9 @@ impl PingFS {
         match components.as_slice() {
             [] => true,
             ["config"] => true,
-            [name] => self
-                .config
-                .read()
-                .unwrap()
-                .targets
-                .contains_key(*name),
+            [name] => self.config.read().unwrap().targets.contains_key(*name),
             [name, file] => {
-                self.config
-                    .read()
-                    .unwrap()
-                    .targets
-                    .contains_key(*name)
+                self.config.read().unwrap().targets.contains_key(*name)
                     && matches!(*file, "ping" | "config")
             }
             _ => false,
