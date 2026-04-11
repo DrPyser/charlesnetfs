@@ -1,5 +1,5 @@
 # { pkgs ? (import (fetchTarball "https://github.com/NixOS/nixpkgs/archive/master.tar.gz") {})}:
-{ pkgs ? (import <nixpkgs> {})}:
+{ pkgs ? (import <nixpkgs> { }) }:
 
 let
   basePackages = with pkgs; [
@@ -12,10 +12,10 @@ let
     rust-analyzer
     bats
     jq
+    plan9port
   ];
 
-in
-pkgs.mkShell {
+in pkgs.mkShell {
   buildInputs = basePackages;
   RUST_BACKTRACE = "1";
   RUST_LOG = "debug";
