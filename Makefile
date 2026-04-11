@@ -1,7 +1,8 @@
 .PHONY: build test format check clippy clean all
 
-all: build test
+all: check build test
 
+RUST_BACKTRACE := full
 build:
 	cargo build
 
