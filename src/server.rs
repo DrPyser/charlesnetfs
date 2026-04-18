@@ -148,6 +148,7 @@ impl Serve9p for PingFS {
         }
 
         if qid == QID_CONFIG {
+            log::debug!("read /config offset={} count={}", offset, count);
             let config = self.config.read().unwrap();
             let yaml = serde_yaml::to_string(&*config).map_err(|e| e.to_string())?;
             let data = yaml.into_bytes();
@@ -193,9 +194,12 @@ impl Serve9p for PingFS {
 
             let response = match result {
                 Ok(ping_result) => {
-                    format!("pong {}ms", ping_result.latency_ms.unwrap())
+                    let ms = ping_result.latency_ms.unwrap();
+                    log::debug!("ping {} → {}ms", addr, ms);
+                    format!("pong {}ms", ms)
                 }
                 Err(e) => {
+                    log::debug!("ping {} → failed: {}", addr, e);
                     format!("fail: {}", e)
                 }
             };
@@ -210,6 +214,12 @@ impl Serve9p for PingFS {
         } else if path.ends_with("config") {
             let parent_path = path.parent().ok_or("invalid target name")?;
             let target_name = parent_path.file_name().ok_or("invalid target name")?;
+            log::debug!(
+                "read {}/config offset={} count={}",
+                target_name,
+                offset,
+                count
+            );
             let config = self.config.read().unwrap();
             let target = config.targets.get(target_name).ok_or("target not found")?;
 
@@ -453,6 +463,14 @@ impl Serve9p for PingFS {
 
             *self.config.write().unwrap() = new_config;
             self.rebuild_qid_cache();
+
+            if let Ok(config) = self.config.read() {
+                log::info!(
+                    "config updated ({} targets, default timeout {}ms)",
+                    config.targets.len(),
+                    config.global_timeout_ms
+                );
+            }
 
             Ok(len)
         } else {
