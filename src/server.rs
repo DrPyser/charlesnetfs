@@ -346,25 +346,7 @@ impl Serve9p for PingFS {
             .path_from_qid(qid)
             .ok_or_else(|| "not found".to_string())?;
 
-        if path.is_root() {
-            return Ok(Stat {
-                fm: FileMeta::dir("", QID_ROOT),
-                perms: Perm::DIR
-                    | Perm::OWNER_READ
-                    | Perm::OWNER_WRITE
-                    | Perm::OWNER_EXEC
-                    | Perm::GROUP_READ
-                    | Perm::GROUP_EXEC
-                    | Perm::OTHER_READ
-                    | Perm::OTHER_EXEC,
-                n_bytes: 0,
-                last_accesses: SystemTime::now(),
-                last_modified: SystemTime::now(),
-                owner: "root".to_string(),
-                group: "root".to_string(),
-                last_modified_by: "root".to_string(),
-            });
-        }
+        assert!(!path.is_root());
 
         if path.parent().map(|p| p.is_root()).unwrap_or(false) {
             let target_name = path.file_name();
