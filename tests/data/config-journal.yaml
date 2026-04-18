@@ -1,0 +1,12 @@
+global_timeout_ms: 5000
+journal_limit: 50
+targets:
+  router:
+    addr: 192.168.1.1:22
+  nas:
+    addr: 192.168.1.100:5000
+  laptop:
+    addr: 127.0.0.1:111
+    timeout_ms: 3000
+    journal_limit: 100
+    journal_port: 19531
