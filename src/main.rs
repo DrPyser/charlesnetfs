@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
 #[command(name = "charlesnetfs")]
-#[command(about = "9P network filesystem exposing host ping results", long_about = None)]
+#[command(about = "9P network filesystem", long_about = None)]
 struct Args {
     #[arg(short, long, default_value = "config.yaml")]
     config: PathBuf,
