@@ -11,4 +11,6 @@ serde_yaml = "0.9"
 ninep = { git = "https://github.com/sminez/ad.git", branch = "develop" }
 signal-hook = "0.4"
 ureq = "2"
+log = "0.4"
+env_logger = "0.11"
 

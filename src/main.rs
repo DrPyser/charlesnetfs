@@ -32,6 +32,8 @@ fn resolve_socket_path(socket: Option<PathBuf>, namespace: Option<PathBuf>) -> P
 }
 
 fn main() -> Result<(), String> {
+    env_logger::init();
+
     let args = Args::parse();
 
     let file = std::fs::File::open(&args.config).map_err(|e| {
@@ -53,7 +55,7 @@ fn main() -> Result<(), String> {
 
     let socket_path = resolve_socket_path(args.socket, args.namespace);
 
-    eprintln!("Starting 9P server at {:?}", socket_path);
+    log::info!("Starting 9P server at {:?}", socket_path);
 
     let server = Server::new(fs);
     let _handle = server.serve_socket_with_custom_path(socket_path.clone());
