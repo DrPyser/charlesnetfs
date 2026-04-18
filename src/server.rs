@@ -598,11 +598,9 @@ mod tests {
 
         // First walk to router
         let router_meta = fs.walk(cid, QID_ROOT, "router", "user").unwrap();
-        eprintln!("router_meta: {:?}", router_meta);
 
         // Then walk to config
         let result = fs.walk(cid, router_meta.qid, "config", "user");
-        eprintln!("result: {:?}", router_meta);
         assert!(result.is_ok());
 
         let meta = result.unwrap();
