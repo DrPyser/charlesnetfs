@@ -35,6 +35,7 @@ fn main() -> Result<(), String> {
     env_logger::init();
 
     let args = Args::parse();
+    log::info!("config path: {}", args.config.display());
 
     let file = std::fs::File::open(&args.config).map_err(|e| {
         format!(
@@ -51,19 +52,28 @@ fn main() -> Result<(), String> {
         )
     })?;
 
+    log::info!(
+        "loaded config: {} targets, default timeout {}ms",
+        config.targets.len(),
+        config.global_timeout_ms
+    );
+    for (name, config) in config.targets.iter() {
+        log::debug!("\ttarget {}: {:?}", name, config);
+    }
+
     let fs = PingFS::new(config);
 
     let socket_path = resolve_socket_path(args.socket, args.namespace);
 
-    log::info!("Starting 9P server at {:?}", socket_path);
+    log::info!("serving on {:?}", socket_path);
 
     let server = Server::new(fs);
     let _handle = server.serve_socket_with_custom_path(socket_path.clone());
 
     let mut signals = Signals::new([SIGINT, SIGTERM]).map_err(|e| e.to_string())?;
 
-    // blocks until signal
-    let _ = signals.forever().next();
+    let sig = signals.forever().next().unwrap();
+    log::info!("received signal {:?}, shutting down", sig);
 
     let _ = std::fs::remove_file(&socket_path);
     std::process::exit(0);

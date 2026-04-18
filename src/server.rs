@@ -39,6 +39,8 @@ impl PingFS {
         cache.insert(QID_ROOT, UnixPath::ROOT);
         cache.insert(QID_CONFIG, UnixPath::ROOT.join("config"));
 
+        log::info!("rebuilding qid cache for {} targets", config.targets.len());
+
         for name in config.targets.keys() {
             let dir_path = UnixPath::ROOT.join(name);
             let ping_path = dir_path.join("ping");
