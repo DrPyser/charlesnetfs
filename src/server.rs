@@ -170,7 +170,7 @@ impl Serve9p for PingFS {
             let config = self.config.read().unwrap();
             let target = config.targets.get(target_name).ok_or("target not found")?;
 
-            let addr = &target.addr;
+            let addr = target.addr.to_string();
             let timeout = target.timeout(self.config.read().unwrap().global_timeout_ms);
             let counter = self
                 .ping_results
@@ -190,7 +190,7 @@ impl Serve9p for PingFS {
                 .unwrap()
                 .insert(qid, counter.to_string());
 
-            let result = pinger::ping(addr, timeout, &payload);
+            let result = pinger::ping(&addr, timeout, &payload);
 
             let response = match result {
                 Ok(ping_result) => {
@@ -493,7 +493,7 @@ impl PingFS {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::TargetConfig;
+    use crate::config::{Addr, TargetConfig};
     use ninep::sansio::server::ClientId;
 
     #[test]
@@ -523,20 +523,21 @@ mod tests {
         targets.insert(
             "router".to_string(),
             TargetConfig {
-                addr: "192.168.1.1:22".to_string(),
-                timeout_ms: None,
+                addr: Addr::parse("192.168.1.1:22").unwrap(),
+                ..Default::default()
             },
         );
         targets.insert(
             "nas".to_string(),
             TargetConfig {
-                addr: "192.168.1.50:22".to_string(),
+                addr: Addr::parse("192.168.1.50:22").unwrap(),
                 timeout_ms: Some(3000),
+                ..Default::default()
             },
         );
         Config {
-            global_timeout_ms: 5000,
             targets,
+            ..Config::default()
         }
     }
 
@@ -1022,7 +1023,7 @@ mod tests {
         let config = fs.config.read().unwrap();
         assert_eq!(config.global_timeout_ms, 3000);
         assert!(config.targets.contains_key("router"));
-        assert_eq!(config.targets["router"].addr, "10.0.0.1:22");
+        assert_eq!(config.targets["router"].addr.to_string(), "10.0.0.1:22");
 
         let qid_cache = fs.qid_cache.lock().unwrap();
         assert!(qid_cache.values().any(|p| p.to_string() == "/router"));
