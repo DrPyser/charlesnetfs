@@ -7,11 +7,25 @@ use std::io::Read;
 pub struct Config {
     #[serde(default = "default_timeout")]
     pub global_timeout_ms: u64,
+    #[serde(default = "default_journal_limit")]
+    pub journal_limit: u64,
     pub targets: BTreeMap<String, TargetConfig>,
 }
 
+const DEFAULT_TIMEOUT_MS: u64 = 5000;
+const DEFAULT_JOURNAL_LIMIT: u64 = 50;
+const DEFAULT_JOURNAL_PORT: u16 = 19531;
+
 fn default_timeout() -> u64 {
-    5000
+    DEFAULT_TIMEOUT_MS
+}
+
+fn default_journal_limit() -> u64 {
+    DEFAULT_JOURNAL_LIMIT
+}
+
+fn default_journal_port() -> u16 {
+    DEFAULT_JOURNAL_PORT
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -74,12 +88,17 @@ pub struct TargetConfig {
     pub addr: Addr,
     #[serde(default)]
     pub timeout_ms: Option<u64>,
+    #[serde(default)]
+    pub journal_limit: Option<u64>,
+    #[serde(default)]
+    pub journal_port: Option<u16>,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
             global_timeout_ms: default_timeout(),
+            journal_limit: default_journal_limit(),
             targets: BTreeMap::new(),
         }
     }
@@ -90,6 +109,8 @@ impl Default for TargetConfig {
         Self {
             addr: Addr::new("localhost".to_string(), 0),
             timeout_ms: None,
+            journal_limit: None,
+            journal_port: None,
         }
     }
 }
@@ -97,6 +118,14 @@ impl Default for TargetConfig {
 impl TargetConfig {
     pub fn timeout(&self, global: u64) -> u64 {
         self.timeout_ms.unwrap_or(global)
+    }
+
+    pub fn journal_limit(&self, global: u64) -> u64 {
+        self.journal_limit.unwrap_or(global)
+    }
+
+    pub fn journal_port(&self) -> u16 {
+        self.journal_port.unwrap_or(default_journal_port())
     }
 }
 
@@ -129,6 +158,43 @@ mod tests {
         assert_eq!(target.timeout(5000), 3000);
     }
 
+    #[test]
+    fn test_journal_limit_uses_global_when_not_set() {
+        let target = TargetConfig {
+            addr: Addr::parse("192.168.1.1:22").unwrap(),
+            ..Default::default()
+        };
+        assert_eq!(target.journal_limit(50), 50);
+    }
+
+    #[test]
+    fn test_journal_limit_uses_override_when_set() {
+        let target = TargetConfig {
+            addr: Addr::parse("192.168.1.1:22").unwrap(),
+            journal_limit: Some(100),
+            ..Default::default()
+        };
+        assert_eq!(target.journal_limit(50), 100);
+    }
+
+    #[test]
+    fn test_journal_port_defaults_to_19531() {
+        let target = TargetConfig {
+            addr: Addr::parse("192.168.1.1:22").unwrap(),
+            ..Default::default()
+        };
+        assert_eq!(target.journal_port(), 19531);
+    }
+
+    #[test]
+    fn test_journal_port_uses_override_when_set() {
+        let target = TargetConfig {
+            addr: Addr::parse("192.168.1.1:22").unwrap(),
+            journal_port: Some(8080),
+            ..Default::default()
+        };
+        assert_eq!(target.journal_port(), 8080);
+    }
 
     #[test]
     fn test_addr_parse_valid() {
@@ -157,6 +223,7 @@ mod tests {
     fn test_config_load() {
         let yaml = r#"
 global_timeout_ms: 5000
+journal_limit: 50
 targets:
   router:
     addr: 192.168.1.1:22
@@ -165,9 +232,12 @@ targets:
   laptop:
     addr: 10.0.0.5:22
     timeout_ms: 3000
+    journal_limit: 100
+    journal_port: 19531
 "#;
         let config = Config::load(yaml.as_bytes()).unwrap();
         assert_eq!(config.global_timeout_ms, 5000);
+        assert_eq!(config.journal_limit, 50);
         assert!(config.targets.contains_key("router"));
         assert!(config.targets.contains_key("nas"));
 
@@ -176,8 +246,24 @@ targets:
         assert_eq!(router.addr.host(), "192.168.1.1");
         assert_eq!(router.addr.port(), 22);
         assert_eq!(router.timeout(5000), 5000);
+        assert_eq!(router.journal_limit(50), 50);
+        assert_eq!(router.journal_port(), 19531);
 
         let laptop = &config.targets["laptop"];
-        assert_eq!(laptop.timeout(5000), 3000); // overrides global
+        assert_eq!(laptop.timeout(5000), 3000);
+        assert_eq!(laptop.journal_limit(50), 100);
+        assert_eq!(laptop.journal_port(), 19531);
+    }
+
+    #[test]
+    fn test_config_load_default_journal_limit() {
+        let yaml = r#"
+global_timeout_ms: 5000
+targets:
+  router:
+    addr: 192.168.1.1:22
+"#;
+        let config = Config::load(yaml.as_bytes()).unwrap();
+        assert_eq!(config.journal_limit, 50);
     }
 }
