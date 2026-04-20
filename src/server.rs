@@ -652,6 +652,23 @@ mod tests {
     }
 
     #[test]
+    fn test_walk_target_to_journal() {
+        let fs = PingFS::new(test_config());
+        let cid = dummy_client_id();
+
+        // First walk to router
+        let router_meta = fs.walk(cid, QID_ROOT, "router", "user").unwrap();
+
+        // Then walk to journal
+        let result = fs.walk(cid, router_meta.qid, "journal", "user");
+        assert!(result.is_ok());
+
+        let meta = result.unwrap();
+        assert_eq!(meta.name, "journal");
+        assert_eq!(meta.ty, FileType::Regular);
+    }
+
+    #[test]
     fn test_walk_invalid_file() {
         let fs = PingFS::new(test_config());
         let cid = dummy_client_id();
@@ -711,6 +728,19 @@ mod tests {
         let stat = result.unwrap();
         assert_eq!(stat.fm.ty, FileType::Regular);
         assert_eq!(stat.fm.name, "config");
+    }
+
+    #[test]
+    fn test_stat_journal() {
+        let fs = PingFS::new(test_config());
+        let cid = dummy_client_id();
+
+        let journal_qid = qid_from_path("/router/journal");
+        let result = fs.stat(cid, journal_qid, "user");
+        assert!(result.is_ok());
+        let stat = result.unwrap();
+        assert_eq!(stat.fm.ty, FileType::Regular);
+        assert_eq!(stat.fm.name, "journal");
     }
 
     #[test]
@@ -873,6 +903,16 @@ mod tests {
             }
             _ => panic!("expected Immediate"),
         }
+    }
+
+    #[test]
+    fn test_read_journal_fails_on_dummy_target() {
+        let fs = PingFS::new(test_config());
+        let cid = dummy_client_id();
+
+        let journal_qid = qid_from_path("/router/journal");
+        let result = fs.read(cid, journal_qid, 0, 100, "user");
+        assert!(result.is_err());
     }
 
     #[test]
