@@ -80,6 +80,7 @@ fn qid_from_path(path: impl Into<UnixPath>) -> u64 {
     }
 
     let sum: u64 = s.bytes().map(|b| b as u64).sum();
+    // reserve first 100 for fixed assignments
     (sum % 0xFFFF_FFFF) + 100
 }
 
@@ -483,11 +484,20 @@ mod tests {
 
     #[test]
     fn test_qid_from_path_root() {
-        assert_eq!(qid_from_path("/"), QID_ROOT);
+        let root_qid = qid_from_path("/");
+        assert!(root_qid <= 100);
+        assert_eq!(root_qid, QID_ROOT);
     }
 
     #[test]
-    fn test_qid_from_path_router() {
+    fn test_qid_from_path_config() {
+        let config_qid = qid_from_path("/config");
+        assert!(config_qid <= 100);
+        assert_eq!(config_qid, QID_CONFIG);
+    }
+
+    #[test]
+    fn test_qid_from_path_target_value() {
         let qid = qid_from_path("/router");
         assert!(qid > 100);
     }
@@ -500,6 +510,13 @@ mod tests {
     #[test]
     fn test_different_paths_different_qids() {
         assert_ne!(qid_from_path("/router"), qid_from_path("/nas"));
+    }
+
+    #[test]
+    fn test_qid_from_path_deeper_is_higher() {
+        for target in vec!["router", "nas", "localhost"] {
+            assert!(qid_from_path(format!("/{}/ping", target)) > qid_from_path(format!("/{}", target)));
+        }
     }
 
     fn test_config() -> Config {
