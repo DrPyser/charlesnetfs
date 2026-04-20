@@ -54,22 +54,10 @@ impl PingFS {
             let config_qid = qid_from_path(&config_path);
             let journal_qid = qid_from_path(&journal_path);
 
-            cache.insert(
-                dir_qid,
-                dir_path
-            );
-            cache.insert(
-                ping_qid,
-                ping_path
-            );
-            cache.insert(
-                config_qid,
-                config_path
-            );
-            cache.insert(
-                journal_qid,
-                journal_path
-            );
+            cache.insert(dir_qid, dir_path);
+            cache.insert(ping_qid, ping_path);
+            cache.insert(config_qid, config_path);
+            cache.insert(journal_qid, journal_path);
         }
     }
 }
@@ -178,7 +166,11 @@ impl Serve9p for PingFS {
                 log::debug!("read /config offset={} count={}", offset, count);
                 let config = self.config.read().unwrap();
                 let yaml = serde_yaml::to_string(&*config).map_err(|e| e.to_string())?;
-                Ok(ReadOutcome::Immediate(slice_bytes(&yaml.into_bytes(), offset, count)))
+                Ok(ReadOutcome::Immediate(slice_bytes(
+                    &yaml.into_bytes(),
+                    offset,
+                    count,
+                )))
             }
             [] | [_] => Ok(ReadOutcome::Immediate(Vec::new())), // root or target dir
             [name, "ping"] if self.has_target(name) => {
@@ -219,7 +211,11 @@ impl Serve9p for PingFS {
                     }
                 };
 
-                Ok(ReadOutcome::Immediate(slice_bytes(&response.into_bytes(), offset, count)))
+                Ok(ReadOutcome::Immediate(slice_bytes(
+                    &response.into_bytes(),
+                    offset,
+                    count,
+                )))
             }
             [name, "config"] if self.has_target(name) => {
                 log::debug!("read {}/config offset={} count={}", name, offset, count);
@@ -232,11 +228,15 @@ impl Serve9p for PingFS {
                     target.timeout(self.config.read().unwrap().global_timeout_ms)
                 );
 
-                Ok(ReadOutcome::Immediate(slice_bytes(&config_text.into_bytes(), offset, count)))
+                Ok(ReadOutcome::Immediate(slice_bytes(
+                    &config_text.into_bytes(),
+                    offset,
+                    count,
+                )))
             }
             [name, "journal"] if self.has_target(name) => {
                 log::debug!("read {}/journal offset={} count={}", name, offset, count);
-                todo!("journal read not implemented");
+                Err("journal not implemented".into())
             }
             _ => Err("not found".into()),
         }
@@ -396,10 +396,7 @@ impl Serve9p for PingFS {
                     ty: FileType::Regular,
                     qid,
                 },
-                perms: Perm::OWNER_READ
-                    | Perm::OWNER_WRITE
-                    | Perm::GROUP_READ
-                    | Perm::OTHER_READ,
+                perms: Perm::OWNER_READ | Perm::OWNER_WRITE | Perm::GROUP_READ | Perm::OTHER_READ,
                 n_bytes: 0,
                 last_accesses: SystemTime::now(),
                 last_modified: SystemTime::now(),
@@ -459,7 +456,8 @@ impl Serve9p for PingFS {
         data: Vec<u8>,
         _uname: &str,
     ) -> Result<usize> {
-        let path = self.path_from_qid(qid)
+        let path = self
+            .path_from_qid(qid)
             .ok_or_else(|| "not found".to_string())?;
         let components: Vec<_> = path.components().collect();
         match components.as_slice() {
@@ -491,7 +489,7 @@ impl Serve9p for PingFS {
 
                 Ok(len)
             }
-            _ => Err("not supported".into())
+            _ => Err("not supported".into()),
         }
     }
 
@@ -553,7 +551,9 @@ mod tests {
     #[test]
     fn test_qid_from_path_deeper_is_higher() {
         for target in vec!["router", "nas", "localhost"] {
-            assert!(qid_from_path(format!("/{}/ping", target)) > qid_from_path(format!("/{}", target)));
+            assert!(
+                qid_from_path(format!("/{}/ping", target)) > qid_from_path(format!("/{}", target))
+            );
         }
     }
 
@@ -1116,7 +1116,9 @@ mod tests {
         let qid_cache = fs.qid_cache.lock().unwrap();
         assert!(qid_cache.values().any(|p| p.to_string() == "/router"));
         assert!(qid_cache.values().any(|p| p.to_string() == "/router/ping"));
-        assert!(qid_cache.values().any(|p| p.to_string() == "/router/config"));
+        assert!(qid_cache
+            .values()
+            .any(|p| p.to_string() == "/router/config"));
     }
 
     #[test]
