@@ -47,10 +47,12 @@ impl PingFS {
             let dir_path = UnixPath::ROOT.join(&name);
             let ping_path = dir_path.join("ping");
             let config_path = dir_path.join("config");
+            let journal_path = dir_path.join("journal");
 
             let dir_qid = qid_from_path(&dir_path);
             let ping_qid = qid_from_path(&ping_path);
             let config_qid = qid_from_path(&config_path);
+            let journal_qid = qid_from_path(&journal_path);
 
             cache.insert(
                 dir_qid,
@@ -63,6 +65,10 @@ impl PingFS {
             cache.insert(
                 config_qid,
                 config_path
+            );
+            cache.insert(
+                journal_qid,
+                journal_path
             );
         }
     }
@@ -129,6 +135,10 @@ impl Serve9p for PingFS {
                     "config" => Ok(FileMeta::file(
                         child,
                         qid_from_path(parent_path.join("config")),
+                    )),
+                    "journal" => Ok(FileMeta::file(
+                        child,
+                        qid_from_path(parent_path.join("journal")),
                     )),
                     _ => Err("not found".into()),
                 }
@@ -224,6 +234,10 @@ impl Serve9p for PingFS {
 
                 Ok(ReadOutcome::Immediate(slice_bytes(&config_text.into_bytes(), offset, count)))
             }
+            [name, "journal"] if self.has_target(name) => {
+                log::debug!("read {}/journal offset={} count={}", name, offset, count);
+                todo!("journal read not implemented");
+            }
             _ => Err("not found".into()),
         }
     }
@@ -296,6 +310,16 @@ impl Serve9p for PingFS {
                     },
                     Stat {
                         fm: FileMeta::file("config", qid_from_path(path.join("config"))),
+                        perms: Perm::OWNER_READ | Perm::GROUP_READ | Perm::OTHER_READ,
+                        n_bytes: 0,
+                        last_accesses: SystemTime::now(),
+                        last_modified: SystemTime::now(),
+                        owner: "root".to_string(),
+                        group: "root".to_string(),
+                        last_modified_by: "root".to_string(),
+                    },
+                    Stat {
+                        fm: FileMeta::file("journal", qid_from_path(path.join("journal"))),
                         perms: Perm::OWNER_READ | Perm::GROUP_READ | Perm::OTHER_READ,
                         n_bytes: 0,
                         last_accesses: SystemTime::now(),
@@ -386,6 +410,20 @@ impl Serve9p for PingFS {
             [name, "config"] if self.has_target(name) => Ok(Stat {
                 fm: FileMeta {
                     name: "config".to_string(),
+                    ty: FileType::Regular,
+                    qid,
+                },
+                perms: Perm::OWNER_READ | Perm::GROUP_READ | Perm::OTHER_READ,
+                n_bytes: 0,
+                last_accesses: SystemTime::now(),
+                last_modified: SystemTime::now(),
+                owner: "root".to_string(),
+                group: "root".to_string(),
+                last_modified_by: "root".to_string(),
+            }),
+            [name, "journal"] if self.has_target(name) => Ok(Stat {
+                fm: FileMeta {
+                    name: "journal".to_string(),
                     ty: FileType::Regular,
                     qid,
                 },
@@ -869,9 +907,10 @@ mod tests {
         let result = fs.read_dir(cid, router_qid, "user");
         assert!(result.is_ok());
         let stats = result.unwrap();
-        assert_eq!(stats.len(), 2); // ping and config
+        assert_eq!(stats.len(), 3); // ping, config, journal
         assert!(stats.iter().any(|s| s.fm.name == "ping"));
         assert!(stats.iter().any(|s| s.fm.name == "config"));
+        assert!(stats.iter().any(|s| s.fm.name == "journal"));
     }
 
     #[test]
