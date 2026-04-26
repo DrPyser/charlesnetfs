@@ -10,7 +10,6 @@ let
     rustfmt
     clippy
     rust-analyzer
-    bats
     jq
     plan9port
   ];
@@ -19,4 +18,7 @@ in pkgs.mkShell {
   buildInputs = basePackages;
   RUST_BACKTRACE = "1";
   RUST_LOG = "debug";
+  shellHook = ''
+  export PATH=$PWD/tests/bats/bin:$PATH
+  '';
 }
