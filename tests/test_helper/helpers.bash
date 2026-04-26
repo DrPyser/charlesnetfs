@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-setup_file() {
+_setup_file() {
     export BATS_TEST_TIMEOUT=30
 }
 
@@ -13,7 +13,7 @@ common_setup() {
     export TMPDIR="${TMPDIR:-/tmp}"
 }
 
-teardown() {
+common_teardown() {
     if [ -f "$TMPDIR/charlesnetfs.pid" ]; then
         for sig in INT TERM KILL; do
             if ps -p $(cat "$TMPDIR/charlesnetfs.pid"); then
@@ -35,7 +35,7 @@ teardown() {
 
 start_server() {
     local config="${1:-${START_SERVER_CONFIG:-tests/data/config.yaml}}"
-    cargo run -- -c "$config" -n "$NAMESPACE" >&2 &
+    cargo run --bin charlesnetfs -- -c "$config" -n "$NAMESPACE" >&2 &
     SERVER_PID=$!
     echo $SERVER_PID >&2
     jobs >&2

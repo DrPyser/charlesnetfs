@@ -2,8 +2,16 @@
 
 load 'test_helper/helpers'
 
+setup_file(){
+    _setup_file
+}
+
 setup() {
     common_setup
+}
+
+teardown() {
+    common_teardown
 }
 
 
