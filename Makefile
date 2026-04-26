@@ -6,6 +6,9 @@ RUST_BACKTRACE := full
 build:
 	cargo build
 
+./target/debug/%:
+	cargo build --bin $*
+
 test: build
 	cargo test --lib
 	bats --print-output-on-failure tests/charlesnetfs.bats
