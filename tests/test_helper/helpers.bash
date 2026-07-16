@@ -2,6 +2,8 @@
 
 _setup_file() {
     export BATS_TEST_TIMEOUT=30
+    # warmup cargo run build
+    cargo run --bin charlesnetfs -- -h >&2
 }
 
 common_setup() {
