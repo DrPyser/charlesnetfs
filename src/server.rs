@@ -1,4 +1,5 @@
 use crate::config::Config;
+use crate::journal;
 use crate::pinger;
 use crate::UnixPath;
 use ninep::fs::{FileMeta, FileType, Mode, Perm, Stat, WStat};
@@ -236,7 +237,29 @@ impl Serve9p for PingFS {
             }
             [name, "journal"] if self.has_target(name) => {
                 log::debug!("read {}/journal offset={} count={}", name, offset, count);
-                Err("journal not implemented".into())
+                let config = self.config.read().unwrap();
+                let target = config.targets.get(*name).ok_or("target not found")?;
+
+                let limit = target.journal_limit(config.journal_limit);
+                let port = target.journal_port();
+
+                let addr = target.addr.to_string();
+                let host = addr.split(':').next().unwrap_or(&addr);
+
+                let entries = journal::read_journal(host, port, limit)
+                    .map_err(|e| format!("journal error: {}", e))?;
+
+                let content: String = entries
+                    .iter()
+                    .map(|e| e.to_string())
+                    .collect::<Vec<_>>()
+                    .join("");
+
+                Ok(ReadOutcome::Immediate(slice_bytes(
+                    &content.into_bytes(),
+                    offset,
+                    count,
+                )))
             }
             _ => Err("not found".into()),
         }
