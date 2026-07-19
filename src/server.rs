@@ -245,7 +245,7 @@ impl Serve9p for PingFS {
 
                 let host = target.addr.host();
 
-                let entries = journal::read_journal(host, port, limit)
+                let entries = journal::fetch_journal(host, port, limit)
                     .map_err(|e| format!("journal error: {}", e))?;
 
                 let content: String = entries

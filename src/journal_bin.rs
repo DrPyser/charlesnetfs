@@ -20,7 +20,7 @@ fn main() {
 
     let args = Args::parse();
 
-    match journal::read_journal(&args.host, args.port, args.limit) {
+    match journal::fetch_journal(&args.host, args.port, args.limit) {
         Ok(entries) => {
             print_journal_entries(&entries);
         }

@@ -43,7 +43,8 @@ impl JournalEntry {
     }
 }
 
-pub fn read_journal(target: &str, port: u16, limit: u64) -> Result<Vec<JournalEntry>, String> {
+
+pub fn fetch_journal(target: &str, port: u16, limit: u64) -> Result<Vec<JournalEntry>, String> {
     let agent = Agent::new();
 
     let url = format!("http://{}:{}/entries", target, port);
