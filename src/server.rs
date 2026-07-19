@@ -243,8 +243,7 @@ impl Serve9p for PingFS {
                 let limit = target.journal_limit(config.journal_limit);
                 let port = target.journal_port();
 
-                let addr = target.addr.to_string();
-                let host = addr.split(':').next().unwrap_or(&addr);
+                let host = target.addr.host();
 
                 let entries = journal::read_journal(host, port, limit)
                     .map_err(|e| format!("journal error: {}", e))?;

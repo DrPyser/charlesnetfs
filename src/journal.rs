@@ -48,7 +48,7 @@ pub fn read_journal(target: &str, port: u16, limit: u64) -> Result<Vec<JournalEn
 
     let url = format!("http://{}:{}/entries", target, port);
 
-    let range = format!("entries=:-{}:", limit-1);
+    let range = format!("entries=:-{}:", limit - 1);
 
     let response = agent
         .get(&url)
