@@ -788,6 +788,17 @@ mod tests {
     }
 
     #[test]
+    fn test_stat_journal_is_readonly() {
+        let fs = PingFS::new(test_config());
+        let cid = dummy_client_id();
+
+        let journal_qid = qid_from_path("/router/journal");
+        let result = fs.stat(cid, journal_qid, "user").unwrap();
+
+        assert!(!result.perms.intersects(Perm::OWNER_WRITE));
+    }
+
+    #[test]
     fn test_stat_invalid_qid() {
         let fs = PingFS::new(test_config());
         let cid = dummy_client_id();
