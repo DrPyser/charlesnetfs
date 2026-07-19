@@ -1,4 +1,4 @@
-.PHONY: build test format check clippy clean all
+.PHONY: build test tests/cargo tests/bats format check clippy clean all
 
 all: check build test
 
@@ -9,9 +9,14 @@ build:
 ./target/debug/%:
 	cargo build --bin $*
 
-test: build
+test/cargo: build
 	cargo test --lib
-	bats --print-output-on-failure tests/charlesnetfs.bats
+
+test/bats: build
+	bats --print-output-on-failure tests
+
+test: build test/cargo test/bats
+	@echo Ran all tests
 
 format:
 	cargo fmt
