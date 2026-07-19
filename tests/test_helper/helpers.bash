@@ -62,3 +62,32 @@ mount_fuse() {
     done
     return 1
 }
+
+JOURNALD_IMAGE="charlesnetfs-journald-gateway"
+
+start_journald_gateway() {
+    local container="${1:-charlesnetfs-journald}"
+
+    if ! command -v docker >/dev/null 2>&1; then
+        return 1
+    fi
+
+    docker rm -f "$container" >/dev/null 2>&1 || true
+    docker build -f tests/data/journald-gateway/Dockerfile -t "$JOURNALD_IMAGE" .
+    docker run -d --name "$container" -p 19531 "$JOURNALD_IMAGE"
+    export GATEWAY_PORT=$(docker port "$container" 19531/tcp | cut -d':' -f2)
+
+    for i in {1..10}; do
+        if curl -s http://localhost:$GATEWAY_PORT/entries >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 0.5
+    done
+    return 1
+}
+
+stop_journald_gateway() {
+    local container="${1:-charlesnetfs-journald}"
+    docker stop "$container" >/dev/null 2>&1 || true
+    docker rm -f "$container" >/dev/null 2>&1 || true
+}

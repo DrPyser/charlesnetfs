@@ -2,14 +2,30 @@
 
 load 'test_helper/helpers'
 
+JOURNALD_CONTAINER="charlesnetfs-journald-bats"
+
 setup_file() {
     _setup_file
+
+    start_journald_gateway "$JOURNALD_CONTAINER"
+
+    docker exec "$JOURNALD_CONTAINER" logger -u /run/systemd/journal/dev-log "bats message one"
+    docker exec "$JOURNALD_CONTAINER" logger -u /run/systemd/journal/dev-log "bats message two"
+
+    export JOURNAL_CONFIG="$BATS_FILE_TMPDIR/config.yaml"
+    cat > "$JOURNAL_CONFIG" <<EOF
+global_timeout_ms: 5000
+journal_limit: 10
+targets:
+  gateway:
+    addr: 127.0.0.1:${GATEWAY_PORT}
+    journal_port: ${GATEWAY_PORT}
+EOF
 }
 
 setup() {
-    export START_SERVER_CONFIG="tests/data/config-journal.yaml"
     common_setup
-    start_server
+    start_server "$JOURNAL_CONFIG"
     wait_for_socket
 }
 
@@ -17,8 +33,14 @@ teardown() {
     common_teardown
 }
 
+teardown_file() {
+    stop_journald_gateway "$JOURNALD_CONTAINER"
+}
+
+# Listing and stat tests
+
 @test "target directory lists journal file via 9p" {
-    result=$(9 9p ls charlesnetfs/router/)
+    result=$(9 9p ls charlesnetfs/gateway/)
 
     [[ "$result" == *"journal"* ]]
     [[ "$result" == *"ping"* ]]
@@ -26,49 +48,103 @@ teardown() {
 }
 
 @test "journal file is visible via 9p stat" {
-    result=$(9 9p stat charlesnetfs/router/journal)
+    result=$(9 9p stat charlesnetfs/gateway/journal)
 
     [[ "$result" == *"journal"* ]]
 }
 
 @test "journal file is read-only via 9p stat" {
-    result=$(9 9p stat charlesnetfs/router/journal)
+    result=$(9 9p stat charlesnetfs/gateway/journal)
 
     [[ "$result" == *'m 0444'* ]]
-}
-
-@test "journal file exists in each target via 9p" {
-    for target in router nas laptop; do
-        result=$(9 9p ls charlesnetfs/${target}/)
-        [[ "$result" == *"journal"* ]] || return 1
-    done
 }
 
 @test "fuse mount shows journal file in target directory" {
     mount_fuse
 
-    [ -f "$MOUNT_DIR/router/journal" ]
-    [ -f "$MOUNT_DIR/nas/journal" ]
-    [ -f "$MOUNT_DIR/laptop/journal" ]
+    [ -f "$MOUNT_DIR/gateway/journal" ]
 }
 
 @test "fuse mount journal file is read-only" {
     mount_fuse
 
-    perms=$(stat -c %a "$MOUNT_DIR/router/journal")
+    perms=$(stat -c %a "$MOUNT_DIR/gateway/journal")
     [ "$perms" = "444" ]
 }
 
 @test "fuse mount journal file is not a directory" {
     mount_fuse
 
-    [ -f "$MOUNT_DIR/router/journal" ]
-    [ ! -d "$MOUNT_DIR/router/journal" ]
+    [ -f "$MOUNT_DIR/gateway/journal" ]
+    [ ! -d "$MOUNT_DIR/gateway/journal" ]
 }
+
+# Happy path read tests (gateway available)
+
+@test "9p read journal returns content" {
+    result=$(9 9p read charlesnetfs/gateway/journal)
+
+    [[ "$result" == *"bats message one"* ]]
+    [[ "$result" == *"bats message two"* ]]
+}
+
+@test "9p read journal contains timestamp format" {
+    result=$(9 9p read charlesnetfs/gateway/journal)
+
+    [[ "$result" == *"["* ]]
+}
+
+@test "fuse read journal returns content" {
+    mount_fuse
+
+    result=$(cat "$MOUNT_DIR/gateway/journal")
+
+    [[ "$result" == *"bats message one"* ]]
+    [[ "$result" == *"bats message two"* ]]
+}
+
+@test "fuse read journal is readable" {
+    mount_fuse
+
+    [ -r "$MOUNT_DIR/gateway/journal" ]
+}
+
+@test "9p read journal shows new entries after write" {
+    result=$(9 9p read charlesnetfs/gateway/journal)
+    [[ "$result" == *"bats message one"* ]]
+
+    docker exec "$JOURNALD_CONTAINER" logger -u /run/systemd/journal/dev-log "bats message three"
+
+    result=$(9 9p read charlesnetfs/gateway/journal)
+    [[ "$result" == *"bats message three"* ]]
+}
+
+# Error path tests (gateway unavailable)
+
+@test "9p read journal fails when gateway is down" {
+    docker stop "$JOURNALD_CONTAINER" >/dev/null 2>&1
+
+    run 9 9p read charlesnetfs/gateway/journal
+    [ "$status" -ne 0 ]
+
+    docker start "$JOURNALD_CONTAINER" >/dev/null 2>&1
+}
+
+@test "fuse read journal fails when gateway is down" {
+    mount_fuse
+    docker stop "$JOURNALD_CONTAINER" >/dev/null 2>&1
+
+    run cat "$MOUNT_DIR/gateway/journal"
+    [ "$status" -ne 0 ]
+
+    docker start "$JOURNALD_CONTAINER" >/dev/null 2>&1
+}
+
+# Hot-reload test
 
 @test "hot-reload config includes journal files for new targets" {
     result=$(9 9p ls charlesnetfs/)
-    [[ "$result" == *"router"* ]]
+    [[ "$result" == *"gateway"* ]]
 
     new_config="global_timeout_ms: 5000
 journal_limit: 25
@@ -84,4 +160,3 @@ targets:
     [[ "$result" == *"ping"* ]]
     [[ "$result" == *"config"* ]]
 }
-
