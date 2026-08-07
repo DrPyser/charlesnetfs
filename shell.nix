@@ -12,6 +12,7 @@ let
     rust-analyzer
     jq
     plan9port
+    rustup
   ];
 
 in pkgs.mkShell {
