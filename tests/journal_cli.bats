@@ -13,6 +13,10 @@ setup_file() {
     start_journald_gateway "$JOURNALD_CONTAINER"
 }
 
+teardown_file() {
+    stop_journald_gateway "$JOURNALD_CONTAINER"
+}
+
 @test "logger can write to container journal via dev-log socket" {
     run docker exec "$JOURNALD_CONTAINER" logger -u /run/systemd/journal/dev-log "test message from bats"
 
@@ -36,6 +40,17 @@ setup_file() {
     [[ ${#lines[@]} = 10 ]]
 }
 
-teardown_file() {
-    stop_journald_gateway "$JOURNALD_CONTAINER"
+@test "journal cli follow blocks to wait for log lines" {
+    OUTPUT=$BATS_TEST_TMPDIR/output
+    $JOURNAL_CLI --follow localhost $GATEWAY_PORT >"$OUTPUT" &
+    FOLLOWPID=$!
+    trap "kill $FOLLOWPID" EXIT
+    sleep 0.5
+    # check that the process is still running
+    assert kill -0 "$FOLLOWPID"
+
+    # push some log entries
+    docker exec "$JOURNALD_CONTAINER" logger -u /run/systemd/journal/dev-log "test message from bats"
+    run wait_for $OUTPUT 'test message from bats' >&2
+    assert_success
 }

@@ -91,3 +91,11 @@ stop_journald_gateway() {
     docker stop "$container" >/dev/null 2>&1 || true
     docker rm -f "$container" >/dev/null 2>&1 || true
 }
+
+wait_for() {
+    local file="$1"
+    local pattern="$2"
+    local timeout="${3:-1}"
+
+    timeout "$timeout" grep -m 1 "$pattern" <(tail -f "$file")
+}
