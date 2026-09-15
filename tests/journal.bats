@@ -119,6 +119,65 @@ teardown_file() {
     [[ "$result" == *"bats message three"* ]]
 }
 
+@test "9p read journal blocks until new entry arrives" {
+    # Read to consume existing entries
+    9 9p read charlesnetfs/gateway/journal >/dev/null
+
+    # Start a read that should block at EOF
+    output_file="$BATS_TMPDIR/journal_read_output"
+    9 9p read charlesnetfs/gateway/journal > "$output_file" &
+    read_pid=$!
+
+    # Give the read time to reach EOF and block
+    sleep 0.5
+
+    # File should be empty (still blocking)
+    [ ! -s "$output_file" ]
+    kill -0 "$read_pid"
+    [ "$!" -eq 0 ]
+
+    # Write new entry to unblock the read
+    docker exec "$JOURNALD_CONTAINER" logger -u /run/systemd/journal/dev-log "unblocking message"
+
+    # Wait for read to complete
+    timeout 5 tail --pid=$read_pid -f /dev/null 2>/dev/null || true
+    wait $read_pid 2>/dev/null || true
+
+    # Should contain the new entry
+    result=$(cat "$output_file")
+    [[ "$result" == *"unblocking message"* ]]
+}
+
+@test "fuse read journal blocks until new entry arrives" {
+    mount_fuse
+
+    # Read to consume existing entries
+    cat "$MOUNT_DIR/gateway/journal" >/dev/null
+
+    # Start a read that should block at EOF
+    output_file="$BATS_TMPDIR/journal_fuse_read_output"
+    rm -f "$output_file"
+    cat "$MOUNT_DIR/gateway/journal" > "$output_file" &
+    read_pid=$!
+
+    # Give the read time to reach EOF and block
+    sleep 0.5
+
+    # File should be empty (still blocking)
+    [ ! -s "$output_file" ]
+
+    # Write new entry to unblock the read
+    docker exec "$JOURNALD_CONTAINER" logger -u /run/systemd/journal/dev-log "unblocking fuse message"
+
+    # Wait for read to complete (with timeout)
+    timeout 5 tail --pid=$read_pid -f /dev/null 2>/dev/null || true
+    wait $read_pid 2>/dev/null || true
+
+    # Should contain the new entry
+    result=$(cat "$output_file")
+    [[ "$result" == *"unblocking fuse message"* ]]
+}
+
 # Error path tests (gateway unavailable)
 
 @test "9p read journal fails when gateway is down" {
