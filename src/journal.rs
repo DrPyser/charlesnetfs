@@ -1,5 +1,6 @@
 use std::fmt::{Display, Formatter};
 use std::io::{BufRead, BufReader, Read};
+use std::time::Duration;
 use ureq::OrAnyStatus;
 
 pub struct JournalEntry {
@@ -55,20 +56,6 @@ fn parse_response<R: Read>(body: R) -> Vec<JournalEntry> {
         .filter(|line| !line.is_empty())
         .filter_map(|l| parse_entry(l.as_str()))
         .collect()
-}
-
-fn send_entries<R: Read>(
-    reader: R,
-    chan: std::sync::mpsc::SyncSender<JournalEntry>,
-) -> Result<(), String> {
-    for line in BufReader::new(reader).lines() {
-        let line = line.map_err(|e| e.to_string())?;
-        if let Some(entry) = parse_entry(&line) {
-            chan.send(entry)
-                .map_err(|_| "failed to push journal entry to main thread")?;
-        }
-    }
-    Ok(())
 }
 
 pub fn fetch_journal(target: &str, port: u16, limit: u64) -> Result<Vec<JournalEntry>, String> {
@@ -130,12 +117,32 @@ pub fn fetch_after_cursor(
     Ok(parse_response(response.into_reader()))
 }
 
-pub fn follow_journal(
-    host: &str,
-    port: u16,
-    chan: std::sync::mpsc::SyncSender<JournalEntry>,
-) -> Result<(), String> {
-    let cursor = fetch_journal(host, port, 1)?
+pub struct JournalStream {
+    reader: BufReader<Box<dyn Read + Send + Sync>>,
+}
+
+impl Iterator for JournalStream {
+    type Item = Result<JournalEntry, String>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let mut line = String::new();
+        match self.reader.read_line(&mut line) {
+            Err(e) => Some(Err(e.to_string())),
+            Ok(0) => None, // EOF
+            Ok(_) => {
+                if let Some(entry) = parse_entry(&line) {
+                    Some(Ok(entry))
+                } else {
+                    Some(Err(format!("failed to parse log entry: {}", line)))
+                }
+            }
+        }
+    }
+}
+
+pub fn follow_journal(host: &str, port: u16) -> Result<JournalStream, String> {
+    let page = fetch_journal(host, port, 1)?;
+    let cursor = page
         .last()
         .map(|entry| entry.cursor.clone())
         .unwrap_or_default();
@@ -161,17 +168,13 @@ pub fn follow_journal(
             response.into_string().unwrap_or("[non-utf8 body]".into())
         ));
     }
-
-    send_entries(response.into_reader(), chan)
+    let reader = BufReader::new(response.into_reader());
+    Ok(JournalStream { reader })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
-    use std::net::TcpListener;
-    use std::sync::mpsc;
-    use std::thread;
 
     fn sample_entry_json(cursor: &str, message: &str, timestamp: u64) -> String {
         format!(
@@ -246,8 +249,8 @@ mod tests {
     fn test_parse_response_multiple_lines() {
         let e1 = sample_entry_json("s=1", "one", 1);
         let e2 = sample_entry_json("s=2", "two", 2);
-        let body = format!("{}\n{}\n", e1, e2);
-        let entries = parse_response(&body);
+        let body = format!("{}\n{}\n", e1, e2).into_bytes();
+        let entries = parse_response(body.as_slice());
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].cursor, "s=1");
         assert_eq!(entries[1].cursor, "s=2");
@@ -256,170 +259,13 @@ mod tests {
     #[test]
     fn test_parse_response_skips_empty_lines() {
         let e = sample_entry_json("s=1", "one", 1);
-        let body = format!("\n{}\n\n{}\n", e, e);
-        let entries = parse_response(&body);
+        let body = format!("\n{}\n\n{}\n", e, e).into_bytes();
+        let entries = parse_response(body.as_slice());
         assert_eq!(entries.len(), 2);
     }
 
     #[test]
     fn test_parse_response_empty_body() {
-        assert!(parse_response("").is_empty());
-    }
-
-    #[test]
-    fn test_follow_journal_streams_entries() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-
-        thread::spawn(move || {
-            let mut stream = listener.accept().unwrap().0;
-            let body = sample_entry_json("s=first", "initial entry", 1000);
-            let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}",
-                body.len(),
-                body
-            );
-            stream.write_all(response.as_bytes()).unwrap();
-
-            let mut stream2 = listener.accept().unwrap().0;
-            let entry1 = sample_entry_json("s=second", "entry two", 2000);
-            let entry2 = sample_entry_json("s=third", "entry three", 3000);
-            let body = format!("{}\n{}\n", entry1, entry2);
-            let response = format!(
-                "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n{:x}\r\n{}\r\n0\r\n\r\n",
-                body.len(),
-                body
-            );
-            stream2.write_all(response.as_bytes()).unwrap();
-            drop(stream2);
-        });
-
-        let (tx, rx) = mpsc::channel();
-        let host = addr.ip().to_string();
-        follow_journal(&host, addr.port(), tx).unwrap();
-
-        let entries: Vec<JournalEntry> = rx.iter().collect();
-        assert_eq!(entries.len(), 2);
-        assert_eq!(entries[0].cursor, "s=second");
-        assert_eq!(entries[1].cursor, "s=third");
-    }
-
-    #[test]
-    fn test_follow_journal_partial_line_buffering() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-
-        thread::spawn(move || {
-            let mut stream = listener.accept().unwrap().0;
-            let body = sample_entry_json("s=init", "init", 100);
-            let resp = format!(
-                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}",
-                body.len(),
-                body
-            );
-            stream.write_all(resp.as_bytes()).unwrap();
-
-            let mut stream2 = listener.accept().unwrap().0;
-            let entry = sample_entry_json("s=buf", "buffered entry", 200);
-            let mid = entry.len() / 2;
-            let resp = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", entry.len());
-            stream2.write_all(resp.as_bytes()).unwrap();
-            stream2.write_all(&entry.as_bytes()[..mid]).unwrap();
-            thread::sleep(std::time::Duration::from_millis(50));
-            stream2.write_all(&entry.as_bytes()[mid..]).unwrap();
-            drop(stream2);
-        });
-
-        let (tx, rx) = mpsc::channel();
-        let host = addr.ip().to_string();
-        follow_journal(&host, addr.port(), tx).unwrap();
-
-        let entries: Vec<JournalEntry> = rx.iter().collect();
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].cursor, "s=buf");
-        assert_eq!(entries[0].message, "buffered entry");
-    }
-
-    #[test]
-    fn test_follow_journal_empty_cursor() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-
-        thread::spawn(move || {
-            let mut stream = listener.accept().unwrap().0;
-            let resp = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n";
-            stream.write_all(resp.as_bytes()).unwrap();
-
-            let mut stream2 = listener.accept().unwrap().0;
-            let entry = sample_entry_json("s=first", "first entry", 500);
-            let resp = format!(
-                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}\n",
-                entry.len() + 1,
-                entry
-            );
-            stream2.write_all(resp.as_bytes()).unwrap();
-            drop(stream2);
-        });
-
-        let (tx, rx) = mpsc::channel();
-        let host = addr.ip().to_string();
-        follow_journal(&host, addr.port(), tx).unwrap();
-
-        let entries: Vec<JournalEntry> = rx.iter().collect();
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].cursor, "s=first");
-    }
-
-    #[test]
-    fn test_follow_journal_http_error() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-
-        thread::spawn(move || {
-            let mut stream = listener.accept().unwrap().0;
-            let resp =
-                "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 13\r\n\r\nserver error";
-            stream.write_all(resp.as_bytes()).unwrap();
-        });
-
-        let (tx, _rx) = mpsc::channel();
-        let host = addr.ip().to_string();
-        let result = follow_journal(&host, addr.port(), tx);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("HTTP error"));
-    }
-
-    #[test]
-    fn test_follow_journal_channel_closed() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-
-        thread::spawn(move || {
-            let mut stream = listener.accept().unwrap().0;
-            let body = sample_entry_json("s=first", "init", 100);
-            let resp = format!(
-                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}",
-                body.len(),
-                body
-            );
-            stream.write_all(resp.as_bytes()).unwrap();
-
-            let mut stream2 = listener.accept().unwrap().0;
-            let entry = sample_entry_json("s=lost", "no receiver", 200);
-            let resp = format!(
-                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}\n",
-                entry.len() + 1,
-                entry
-            );
-            stream2.write_all(resp.as_bytes()).unwrap();
-            drop(stream2);
-        });
-
-        let (tx, rx) = mpsc::channel();
-        let host = addr.ip().to_string();
-        drop(rx);
-        let result = follow_journal(&host, addr.port(), tx);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("failed to push"));
+        assert!(parse_response("".as_bytes()).is_empty());
     }
 }

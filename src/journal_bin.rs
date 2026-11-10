@@ -25,9 +25,7 @@ fn main() {
 
     if !args.follow {
         match journal::fetch_journal(&args.host, args.port, args.limit) {
-            Ok(entries) => {
-                print_journal_entries(entries);
-            }
+            Ok(entries) => entries.iter().for_each(|e| println!("{}", e)),
             Err(e) => {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);
@@ -36,33 +34,21 @@ fn main() {
     } else {
         log::debug!("following journal");
         match journal::fetch_journal(&args.host, args.port, args.limit) {
-            Ok(entries) => {
-                print_journal_entries(entries);
-            }
+            Ok(entries) => entries.iter().for_each(|e| println!("{}", e)),
             Err(e) => {
                 eprintln!("error: {}", e.to_string());
                 std::process::exit(1);
             }
         };
-        // now start following
-        std::thread::scope(|s| {
-            let (sender, receiver) = std::sync::mpsc::sync_channel(100);
-            s.spawn(|| {
-                if let Err(e) = journal::follow_journal(&args.host, args.port, sender) {
-                    eprintln!("error: {}", e);
-                    std::process::exit(1);
-                };
-            });
-            print_journal_entries(receiver);
-        });
-    }
-}
-
-fn print_journal_entries<T>(entries: T) -> ()
-where
-    T: IntoIterator<Item = JournalEntry>,
-{
-    for entry in entries {
-        println!("{}", entry.to_string());
+        match journal::follow_journal(&args.host, args.port) {
+            Err(e) => {
+                eprintln!("error: {}", e);
+                std::process::exit(1);
+            }
+            Ok(stream) => stream.for_each(|entry_or_error| match entry_or_error {
+                Err(e) => eprintln!("error on journal entry: {}", e),
+                Ok(entry) => println!("{}", entry),
+            }),
+        };
     }
 }

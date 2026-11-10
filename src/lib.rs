@@ -4,5 +4,5 @@ pub mod pinger;
 pub mod server;
 pub mod unix_path;
 
-pub use journal::JournalEntry;
+pub use journal::*;
 pub use unix_path::UnixPath;
