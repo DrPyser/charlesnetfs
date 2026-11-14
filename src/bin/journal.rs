@@ -1,4 +1,4 @@
-use charlesnetfs::journal::{self, JournalEntry};
+use charlesnetfs::journal::{self};
 use clap::Parser;
 
 #[derive(Parser, Debug)]

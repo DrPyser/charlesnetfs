@@ -1,6 +1,5 @@
 use std::fmt::{Display, Formatter};
 use std::io::{BufRead, BufReader, Read};
-use std::time::Duration;
 use ureq::OrAnyStatus;
 
 pub struct JournalEntry {
