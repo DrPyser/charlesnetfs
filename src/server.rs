@@ -1,5 +1,5 @@
 use crate::config::Config;
-use crate::journal;
+use crate::journal::follow_journal;
 use crate::pinger;
 use crate::UnixPath;
 use ninep::fs::{FileMeta, FileType, Mode, Perm, Stat, WStat};
@@ -9,17 +9,21 @@ use ninep::Result;
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 use std::sync::RwLock;
+use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const QID_ROOT: u64 = 0;
 const QID_CONFIG: u64 = 1;
 const IO_UNIT: ninep::fs::IoUnit = 4096;
 
+type Qid = u64;
+
 pub struct PingFS {
     config: RwLock<Config>,
-    ping_results: Mutex<BTreeMap<u64, String>>,
+    ping_results: Mutex<BTreeMap<Qid, String>>,
     // QID -> path
-    qid_cache: Mutex<BTreeMap<u64, UnixPath>>,
+    qid_cache: Mutex<BTreeMap<Qid, UnixPath>>,
+    tasks: Mutex<Vec<std::thread::JoinHandle<()>>>,
 }
 
 impl PingFS {
@@ -28,6 +32,7 @@ impl PingFS {
             config: RwLock::new(config),
             ping_results: Mutex::new(BTreeMap::new()),
             qid_cache: Mutex::new(BTreeMap::new()),
+            tasks: Mutex::new(Vec::new()),
         };
         fs.rebuild_qid_cache();
         fs
@@ -240,25 +245,56 @@ impl Serve9p for PingFS {
                 let config = self.config.read().unwrap();
                 let target = config.targets.get(*name).ok_or("target not found")?;
 
-                let limit = target.journal_limit(config.journal_limit);
+                // let limit = target.journal_limit(config.journal_limit);
                 let port = target.journal_port();
 
-                let host = target.addr.host();
+                let host = target.addr.host().to_owned();
 
-                let entries = journal::fetch_journal(host, port, limit)
-                    .map_err(|e| format!("journal error: {}", e))?;
+                // need to read entries into a persistent buffer,
+                // self.journal_entries
+                // then check how much bytes the client wants
+                // then if asked more bytes than available, follow the stream
+                // let entries = journal::fetch_journal(host, port, count.try_into().unwrap())
+                //     .map_err(|e| format!("journal error: {}", e))?;
 
-                let content: String = entries
-                    .iter()
-                    .map(|e| e.to_string())
-                    .collect::<Vec<_>>()
-                    .join("");
-
-                Ok(ReadOutcome::Immediate(slice_bytes(
-                    &content.into_bytes(),
-                    offset,
-                    count,
-                )))
+                // offset is ignored, counts is number of entries to collect before sending
+                let (sink, source) = std::sync::mpsc::sync_channel(1);
+                let (signal_sink, signal_source) = std::sync::mpsc::sync_channel(1);
+                let handle = std::thread::spawn(move || match follow_journal(&host, port) {
+                    Err(e) => {
+                        log::error!("Error tailing journal file: {}", e);
+                        if let Err(ee) = signal_sink.send(Err(format!("connect failed: {}", e))) {
+                            log::error!("Error signaling from journal thread: {}", ee);
+                        }
+                    }
+                    Ok(stream) => {
+                        if let Err(e) = signal_sink.send(Ok(())) {
+                            log::error!("Error signaling from journal thread: {}", e);
+                        }
+                        let data = stream
+                            .take(count)
+                            .filter_map(|r| match r {
+                                Err(e) => {
+                                    log::error!("Bad journal entry: {}", e);
+                                    None
+                                }
+                                Ok(e) => Some(e.to_string()),
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                            + "\n";
+                        if let Err(e) = sink.send(data.into_bytes()) {
+                            log::error!("Error pushing journal entries down channel: {}", e);
+                        }
+                    }
+                });
+                if let Ok(mut tasks) = self.tasks.lock() {
+                    tasks.push(handle);
+                };
+                match signal_source.recv_timeout(Duration::from_secs(5)) {
+                    Err(e) => Err(e.to_string()),
+                    Ok(_) => Ok(ReadOutcome::Blocked(source)),
+                }
             }
             _ => Err("not found".into()),
         }
@@ -945,7 +981,11 @@ mod tests {
 
         let journal_qid = qid_from_path("/router/journal");
         let result = fs.read(cid, journal_qid, 0, 100, "user");
-        assert!(result.is_err());
+        assert!(result.is_ok());
+        match result.unwrap() {
+            ReadOutcome::Blocked(_) => (),
+            r => panic!("Expected Blocking read, got {:?}", r),
+        }
     }
 
     #[test]
