@@ -5,11 +5,11 @@ edition = "2021"
 
 [[bin]]
 name = "charlesnetfs"
-path = "src/main.rs"
+path = "src/bin/charlesnetfs.rs"
 
 [[bin]]
 name = "journal"
-path = "src/journal_bin.rs"
+path = "src/bin/journal.rs"
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
