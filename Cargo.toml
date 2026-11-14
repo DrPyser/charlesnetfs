@@ -23,8 +23,11 @@ ninep = { git = "https://github.com/sminez/ad.git", rev = "22d55f3845d62e5679df8
 # Pin simple_coro to 0.1.3;
 # ninep rev 22d55f3 (committed 2026-04-10) only works with simple_coro <= 0.1.3.
 simple_coro = "=0.1.3"
-signal-hook = "0.4"
 ureq = { version = "2", features = ["json"] }
 log = "0.4"
 env_logger = "0.11"
+styx9p = "0.1.0"
+tokio = { version = "1.54.1", features = ["rt", "rt-multi-thread", "macros", "net", "signal"] }
+
+[dev-dependencies]
 

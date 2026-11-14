@@ -1,9 +1,8 @@
 use charlesnetfs::{config::Config, server};
 use clap::Parser;
-use ninep::sync::server::{socket_path, Server};
-use signal_hook::consts::signal::{SIGINT, SIGTERM};
-use signal_hook::iterator::Signals;
+use std::io;
 use std::path::PathBuf;
+use tokio::signal::unix::{signal, SignalKind};
 
 #[derive(Parser, Debug)]
 #[command(name = "charlesnetfs")]
@@ -28,28 +27,36 @@ fn resolve_socket_path(socket: Option<PathBuf>, namespace: Option<PathBuf>) -> P
         return ns.join("charlesnetfs");
     }
 
-    socket_path("charlesnetfs")
+    // TODO: rely on plan9port to get namespace
+    let namespace = std::env::var("NAMESPACE").unwrap_or_else(|_| {
+        let user = std::env::var("USER").expect("need $NAMESPACE or $USER");
+        std::env::var("DISPLAY")
+            .map(|display| format!("/tmp/ns.{}.{}", user, display))
+            .unwrap_or(format!("/tmp/ns.{}", user))
+    });
+    PathBuf::from(namespace).join("charlesnetfs")
 }
 
-fn main() -> Result<(), String> {
+#[tokio::main]
+async fn main() -> io::Result<()> {
     env_logger::init();
 
     let args = Args::parse();
     log::info!("config path: {}", args.config.display());
 
     let file = std::fs::File::open(&args.config).map_err(|e| {
-        format!(
+        io::Error::other(format!(
             "failed to open config file {}: {}",
             args.config.display(),
             e
-        )
+        ))
     })?;
     let config = Config::load(file).map_err(|e| {
-        format!(
+        io::Error::other(format!(
             "failed to load config from {}: {}",
             args.config.to_string_lossy(),
             e
-        )
+        ))
     })?;
 
     log::info!(
@@ -61,20 +68,22 @@ fn main() -> Result<(), String> {
         log::debug!("\ttarget {}: {:?}", name, config);
     }
 
-    let fs = server::ninep::PingFS::new(config);
-
     let socket_path = resolve_socket_path(args.socket, args.namespace);
+    let listener = tokio::net::UnixListener::bind(&socket_path)?;
+    let fs = server::styx9p::PingFS::new(config);
+    let server = styx9p::Server::new(fs);
 
-    log::info!("serving on {:?}", socket_path);
+    let serve = tokio::spawn(async move { server.serve_unix(listener).await });
 
-    let server = Server::new(fs);
-    let _handle = server.serve_socket_with_custom_path(socket_path.clone());
+    let mut sigint = signal(SignalKind::interrupt())?;
+    let mut sigterm = signal(SignalKind::terminate())?;
 
-    let mut signals = Signals::new([SIGINT, SIGTERM]).map_err(|e| e.to_string())?;
-
-    let sig = signals.forever().next().unwrap();
-    log::info!("received signal {:?}, shutting down", sig);
+    tokio::select! {
+        _ = sigint.recv() => log::info!("received SIGINT, shutting down"),
+        _ = sigterm.recv() => log::info!("received SIGTERM, shutting down"),
+        result = serve => log::info!("server exited: {:?}", result),
+    }
 
     let _ = std::fs::remove_file(&socket_path);
-    std::process::exit(0);
+    Ok(())
 }
