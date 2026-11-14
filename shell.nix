@@ -13,6 +13,7 @@ let
     jq
     plan9port
     rustup
+    fossil
   ];
 
 in pkgs.mkShell {
