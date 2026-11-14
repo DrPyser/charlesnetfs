@@ -1,4 +1,4 @@
-use charlesnetfs::{config::Config, server::PingFS};
+use charlesnetfs::{config::Config, server};
 use clap::Parser;
 use ninep::sync::server::{socket_path, Server};
 use signal_hook::consts::signal::{SIGINT, SIGTERM};
@@ -61,7 +61,7 @@ fn main() -> Result<(), String> {
         log::debug!("\ttarget {}: {:?}", name, config);
     }
 
-    let fs = PingFS::new(config);
+    let fs = server::ninep::PingFS::new(config);
 
     let socket_path = resolve_socket_path(args.socket, args.namespace);
 
