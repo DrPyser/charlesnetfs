@@ -36,7 +36,7 @@ fn main() {
         match journal::fetch_journal(&args.host, args.port, args.limit) {
             Ok(entries) => entries.iter().for_each(|e| println!("{}", e)),
             Err(e) => {
-                eprintln!("error: {}", e.to_string());
+                eprintln!("error: {}", e);
                 std::process::exit(1);
             }
         };
