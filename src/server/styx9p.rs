@@ -373,21 +373,37 @@ impl File for PingFile {
                 counter,
                 fs,
             } => {
-                let config = fs.config.read().unwrap();
-                let target = config
-                    .targets
-                    .get(target_name.as_str())
-                    .ok_or_else(|| Error::new("target not found"))?;
-
-                let addr = target.addr.to_string();
-                let timeout = target.timeout(config.global_timeout_ms);
+                if offset > 0 {
+                    // EOF beyond offset 0
+                    return Ok(Vec::new());
+                }
+                let (timeout, addr) = {
+                    // config's lock need to be released before any await
+                    let config = fs.config.read().unwrap();
+                    let target = config
+                        .targets
+                        .get(target_name.as_str())
+                        .ok_or_else(|| Error::new("target not found"))?;
+                    let timeout = target.timeout(config.global_timeout_ms);
+                    let addr = target.addr.to_string();
+                    (timeout, addr)
+                };
 
                 let n = counter.fetch_add(1, Ordering::Relaxed);
 
                 let payload = format!("{}_{}", current_timestamp(), n);
                 let mut buffer = Vec::new();
 
-                match pinger::ping(&addr, timeout, &payload) {
+                // need an independent borrow to move to thread
+                let ping_addr = addr.clone();
+
+                // TODO: async version of ping
+                match tokio::task::spawn_blocking(move || {
+                    pinger::ping(&ping_addr, timeout, &payload)
+                })
+                .await
+                .expect("could not join on tokio thread!")
+                {
                     Ok(ping_result) => {
                         let ms = ping_result.latency_ms.unwrap();
                         log::debug!("ping {} → {}ms", addr, ms);
