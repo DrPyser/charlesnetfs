@@ -1,27 +1,4 @@
 //! 9P filesystem server using styx9p.
-//!
-//! Design differences from the ninep-based implementation (`server/ninep.rs`):
-//!
-//! 1. **Two-trait split:** `Filesystem` (sync tree ops) + `File` (async I/O)
-//!    replaces the single `Serve9p` trait. Tree ops (walk, stat, readdir)
-//!    are sync by nature; only reads/writes are async.
-//!
-//! 2. **Per-open state:** `PingFile` carries its own `ping_counter`, so each
-//!    `open()` of `/router/ping` gets an independent counter. The old code
-//!    shared one counter across all opens via `ping_results: BTreeMap<Qid, String>`.
-//!
-//! 3. **Async journal reads:** `File::read` awaits the journal stream directly.
-//!    The old code returned `ReadOutcome::Blocked(channel)` from a sync method,
-//!    spawning threads and plumbing channels. No more.
-//!
-//! 4. **`read_at()` replaces `slice_bytes()`:** Same logic, provided by styx9p.
-//!
-//! 5. **Unix-mode permissions:** `Stat::new(name, qid, 0o555, 0)` replaces
-//!    verbose `Perm::DIR | Perm::OWNER_READ | ...` bitflag composition.
-//!
-//! 6. **Target info carried per-file:** `PingFile` stores the target name and
-//!    a reference to `Arc<PingFS>`, so `File::read`/`File::write` can access
-//!    config and ping logic without global state lookups.
 
 #![warn(clippy::await_holding_lock)]
 
