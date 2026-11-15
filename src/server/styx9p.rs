@@ -69,6 +69,7 @@ fn current_timestamp() -> u64 {
 
 /// The filesystem tree: configuration and qid mapping.
 /// Shared across all connections (styx9p wraps it in Arc internally).
+#[derive(Debug)]
 pub struct PingFS {
     /// Read-write lock on the live config. Only written via `File::write` on
     /// `GlobalConfig`. Safe to hold across `.await` only in read mode; write
@@ -77,6 +78,17 @@ pub struct PingFS {
     /// Qid path -> UnixPath (the reverse mapping for resolution).
     /// Only accessed from sync `Filesystem` trait methods — never across `.await`.
     qid_cache: Mutex<BTreeMap<u64, UnixPath>>,
+}
+
+impl std::fmt::Display for PingFS {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "PingFS {{ {} targets, {} QIDs }}",
+            self.config.read().unwrap().targets.len(),
+            self.qid_cache.lock().unwrap().len()
+        )
+    }
 }
 
 impl Clone for PingFS {
@@ -266,6 +278,7 @@ impl PingFS {
 
 /// One open fid: per-open state lives here.
 /// Each `open()` creates an independent instance.
+#[derive(Debug)]
 pub enum PingFile {
     /// Per-open ping probe: independent counter and last-result cache.
     /// `counter` and `last_result` are only touched in the sync portion of
@@ -282,6 +295,30 @@ pub enum PingFile {
     TargetConfig { target_name: String, fs: PingFS },
     /// Journal stream (placeholder).
     Journal { target_name: String, fs: PingFS },
+}
+
+impl std::fmt::Display for PingFile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PingFile::Ping {
+                target_name,
+                counter,
+                ..
+            } => write!(
+                f,
+                "Ping {{ target_name={}, counter={} }}",
+                target_name,
+                counter.load(Ordering::Relaxed)
+            ),
+            Self::GlobalConfig { .. } => write!(f, "GlobalConfig"),
+            Self::TargetConfig { target_name, .. } => {
+                write!(f, "TargetConfig {{ target_name={} }}", target_name)
+            }
+            Self::Journal { target_name, .. } => {
+                write!(f, "Journal {{ target_name={} }}", target_name)
+            }
+        }
+    }
 }
 
 impl Filesystem for PingFS {
@@ -329,6 +366,7 @@ impl Filesystem for PingFS {
 
 impl File for PingFile {
     async fn read(&self, offset: u64, count: u32) -> Result<Vec<u8>> {
+        log::debug!("read on {} offset={} count={}", self, offset, count);
         match self {
             PingFile::Ping {
                 target_name,
