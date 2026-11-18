@@ -7,41 +7,43 @@ _setup_file() {
 }
 
 common_setup() {
-    TESTS_TMPDIR=$(mktemp -d /tmp/charlesnetfs-tests-XXXXXX)
-    export NAMESPACE="$TESTS_TMPDIR/ns"
+    export NAMESPACE="$BATS_TEST_TMPDIR/ns"
     mkdir -p "$NAMESPACE"
-    export MOUNT_DIR="$TESTS_TMPDIR/mnt"
+    export MOUNT_DIR="$BATS_TEST_TMPDIR/mnt"
     mkdir -p "$MOUNT_DIR"
-    export TMPDIR="${TMPDIR:-/tmp}"
 }
 
 common_teardown() {
-    if [ -f "$TMPDIR/charlesnetfs.pid" ]; then
-        for sig in INT TERM KILL; do
-            if ps -p $(cat "$TMPDIR/charlesnetfs.pid"); then
-                kill -$sig $(cat "$TMPDIR/charlesnetfs.pid") >&2
-                sleep 0.5 &
-                wait -n $! $(cat "$TMPDIR/charlesnetfs.pid")
-            else
-                break
-            fi
-        done
-        rm -f "$TMPDIR/charlesnetfs.pid"
-    fi
+    stop_server || true
     sleep 0.5
     if mountpoint -q "$MOUNT_DIR" 2>/dev/null; then
         fusermount -u "$MOUNT_DIR" 2>/dev/null || true
     fi
-    rm -rf "$TESTS_TMPDIR"
 }
 
 start_server() {
     local config="${1:-${START_SERVER_CONFIG:-tests/data/config.yaml}}"
+    export RUST_LOG=debug
     cargo run --bin charlesnetfs -- -c "$config" -n "$NAMESPACE" >&2 &
     SERVER_PID=$!
     echo $SERVER_PID >&2
     jobs >&2
-    echo $SERVER_PID > "$TMPDIR/charlesnetfs.pid"
+    echo $SERVER_PID > "$BATS_TEST_TMPDIR/charlesnetfs.pid"
+}
+
+stop_server() {
+    if [ -f "$BATS_TEST_TMPDIR/charlesnetfs.pid" ]; then
+        for sig in INT TERM KILL; do
+            if ps -p $(cat "$BATS_TEST_TMPDIR/charlesnetfs.pid"); then
+                kill -$sig $(cat "$BATS_TEST_TMPDIR/charlesnetfs.pid") >&2
+                sleep 0.5 &
+                wait -n $! $(cat "$BATS_TEST_TMPDIR/charlesnetfs.pid")
+            else
+                break
+            fi
+        done
+        rm -f "$BATS_TEST_TMPDIR/charlesnetfs.pid"
+    fi
 }
 
 wait_for_socket() {
@@ -49,7 +51,7 @@ wait_for_socket() {
         test -S "$NAMESPACE/charlesnetfs" && return 0
         echo "No socket at path $NAMESPACE/charlesnetfs" >&2
         ls -l "$NAMESPACE" >&2
-        sleep 0.25
+        sleep 1
     done
     return 1
 }

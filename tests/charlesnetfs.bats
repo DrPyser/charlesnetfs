@@ -17,7 +17,7 @@ teardown() {
 
 @test "server starts with default args" {
     start_server
-    kill -0 $(cat "$TMPDIR/charlesnetfs.pid")
+    kill -0 $(cat "$BATS_TEST_TMPDIR/charlesnetfs.pid")
 }
 
 @test "socket file is created" {
@@ -34,7 +34,7 @@ teardown() {
 
     [[ "$result" == *"router"* ]]
     [[ "$result" == *"nas"* ]]
-    [[ "$result" == *"laptop"* ]]
+    [[ "$result" == *"localhost"* ]]
 }
 
 @test "lists target directory contents" {
@@ -54,7 +54,18 @@ teardown() {
     result=$(9 9p read charlesnetfs/router/config)
 
     [[ "$result" == *"addr:"* ]]
-    [[ "$result" == *"timeout:"* ]]
+    [[ "$result" == *"timeout_ms:"* ]]
+}
+
+@test "read reachable target ping file" {
+    start_server
+    wait_for_socket
+
+    run 9 9p read charlesnetfs/localhost/ping
+
+    [ "$status" -eq 0 ]
+    [ "${#lines[@]}" -eq 2 ]
+    [[ "$output" =~ "pong" ]]
 }
 
 @test "reads root config file" {
@@ -92,7 +103,7 @@ teardown() {
     result=$(9 9p ls charlesnetfs/)
     [[ "$result" == *"router"* ]]
     [[ "$result" == *"nas"* ]]
-    [[ "$result" == *"laptop"* ]]
+    [[ "$result" == *"localhost"* ]]
 
     new_config="global_timeout_ms: 3000
 targets:
@@ -105,7 +116,7 @@ targets:
     [[ "$result" == *"newhost"* ]]
     [[ "$result" != *"router"* ]]
     [[ "$result" != *"nas"* ]]
-    [[ "$result" != *"laptop"* ]]
+    [[ "$result" != *"localhost"* ]]
 }
 
 @test "server shutdown cleans up socket" {
@@ -125,7 +136,7 @@ targets:
 
     [ -d "$MOUNT_DIR/router" ]
     [ -d "$MOUNT_DIR/nas" ]
-    [ -d "$MOUNT_DIR/laptop" ]
+    [ -d "$MOUNT_DIR/localhost" ]
 }
 
 @test "fuse mount shows global config file" {
