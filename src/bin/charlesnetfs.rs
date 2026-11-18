@@ -20,15 +20,18 @@ struct Args {
 
 fn resolve_socket_path(socket: Option<PathBuf>, namespace: Option<PathBuf>) -> PathBuf {
     if let Some(socket) = socket {
+        log::debug!("explicit socket path argument {}", socket.to_string_lossy());
         return socket;
     }
 
     if let Some(ns) = namespace {
+        log::debug!("explicit namespace argument {}", ns.to_string_lossy());
         return ns.join("charlesnetfs");
     }
 
     // TODO: rely on plan9port to get namespace
     let namespace = std::env::var("NAMESPACE").unwrap_or_else(|_| {
+        log::debug!("$NAMESPACE not set, computing from $USER and $DISPLAY");
         let user = std::env::var("USER").expect("need $NAMESPACE or $USER");
         std::env::var("DISPLAY")
             .map(|display| format!("/tmp/ns.{}.{}", user, display))
@@ -42,6 +45,8 @@ async fn main() -> io::Result<()> {
     env_logger::init();
 
     let args = Args::parse();
+    let socket_path = resolve_socket_path(args.socket, args.namespace);
+    log::info!("listening on unix socket {}", socket_path.to_string_lossy());
     log::info!("config path: {}", args.config.display());
 
     let file = std::fs::File::open(&args.config).map_err(|e| {
@@ -68,7 +73,6 @@ async fn main() -> io::Result<()> {
         log::debug!("\ttarget {}: {:?}", name, config);
     }
 
-    let socket_path = resolve_socket_path(args.socket, args.namespace);
     let listener = tokio::net::UnixListener::bind(&socket_path)?;
     let fs = server::styx9p::PingFS::new(config);
     let server = styx9p::Server::new(fs);
