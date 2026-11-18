@@ -5,22 +5,27 @@ let
   basePackages = with pkgs; [
     fuse
     pkg-config
-    rustc
-    cargo
-    rustfmt
-    clippy
-    rust-analyzer
     jq
     plan9port
     rustup
     fossil
   ];
 
+  rustupHome = "$PWD/.rustup";
+  cargoHome = "$PWD/.cargo";
+
 in pkgs.mkShell {
   buildInputs = basePackages;
   RUST_BACKTRACE = "1";
   RUST_LOG = "debug";
   shellHook = ''
-  export PATH=$PWD/tests/bats/bin:$PATH
+  export RUSTUP_HOME=${rustupHome}
+  export CARGO_HOME=${cargoHome}
+  export PATH=${cargoHome}/bin:$PWD/tests/bats/bin:$PATH
+
+  if ! rustup toolchain list | grep -q stable; then
+    rustup default stable
+  fi
+  rustup component add rust-analyzer 2>/dev/null
   '';
 }
