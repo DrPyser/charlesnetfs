@@ -3,12 +3,14 @@
 #![warn(clippy::await_holding_lock)]
 
 use crate::config::Config;
+use crate::config::TargetConfig;
 use crate::pinger;
 use crate::UnixPath;
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::RwLock;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -51,10 +53,10 @@ pub struct PingFS {
     /// Read-write lock on the live config. Only written via `File::write` on
     /// `GlobalConfig`. Safe to hold across `.await` only in read mode; write
     /// mode is never held across `.await` (the write completes synchronously).
-    pub config: RwLock<Config>,
+    pub config: Arc<RwLock<Config>>,
     /// Qid path -> UnixPath (the reverse mapping for resolution).
     /// Only accessed from sync `Filesystem` trait methods — never across `.await`.
-    qid_cache: Mutex<BTreeMap<u64, UnixPath>>,
+    qid_cache: Arc<Mutex<BTreeMap<u64, UnixPath>>>,
 }
 
 impl std::fmt::Display for PingFS {
@@ -71,8 +73,8 @@ impl std::fmt::Display for PingFS {
 impl Clone for PingFS {
     fn clone(&self) -> Self {
         Self {
-            config: RwLock::new(self.config.read().unwrap().clone()),
-            qid_cache: Mutex::new(self.qid_cache.lock().unwrap().clone()),
+            config: Arc::clone(&self.config),
+            qid_cache: Arc::clone(&self.qid_cache),
         }
     }
 }
@@ -80,8 +82,8 @@ impl Clone for PingFS {
 impl PingFS {
     pub fn new(config: Config) -> Self {
         let fs = Self {
-            config: RwLock::new(config),
-            qid_cache: Mutex::new(BTreeMap::new()),
+            config: Arc::new(RwLock::new(config)),
+            qid_cache: Arc::new(Mutex::new(BTreeMap::new())),
         };
         fs.rebuild_qid_cache();
         fs
@@ -108,6 +110,14 @@ impl PingFS {
                 dir_path.join("journal"),
             );
         }
+    }
+
+    pub fn target_config(&self, name: &str) -> Option<TargetConfig> {
+        self.config.read().unwrap().targets.get(name).cloned()
+    }
+
+    pub fn global_config(&self) -> Config {
+        self.config.read().unwrap().clone()
     }
 
     pub fn path_from_qid(&self, qid_path: u64) -> Option<UnixPath> {
@@ -355,11 +365,11 @@ impl File for PingFile {
                     return Ok(Vec::new());
                 }
                 let (timeout, addr) = {
-                    // config's lock need to be released before any await
-                    let config = fs.config.read().unwrap();
+                    // config's lock must be released before any await
+                    let config = fs.global_config();
                     let target = config
                         .targets
-                        .get(target_name.as_str())
+                        .get(target_name)
                         .ok_or_else(|| Error::new("target not found"))?;
                     let timeout = target.timeout(config.global_timeout_ms);
                     let addr = target.addr.to_string();
@@ -397,12 +407,11 @@ impl File for PingFile {
             }
 
             PingFile::TargetConfig { target_name, fs } => {
-                let config = fs.config.read().unwrap();
-                let target = config
-                    .targets
-                    .get(target_name.as_str())
+                let target = fs
+                    .target_config(target_name)
                     .ok_or_else(|| Error::new("target not found"))?;
-                let yaml = serde_yaml::to_string(target).map_err(|e| Error::from(e.to_string()))?;
+                let yaml =
+                    serde_yaml::to_string(&target).map_err(|e| Error::from(e.to_string()))?;
 
                 Ok(read_at(yaml.as_bytes(), offset, count))
             }
@@ -842,7 +851,7 @@ mod tests {
     #[tokio::test]
     async fn test_read_global_config() {
         let fs = test_fs();
-        let file = PingFile::GlobalConfig { fs: fs };
+        let file = PingFile::GlobalConfig { fs: fs.clone() };
         let data = file.read(0, 4096).await.unwrap();
         let content = String::from_utf8(data).unwrap();
         assert!(content.contains("global_timeout_ms:"));
@@ -854,7 +863,7 @@ mod tests {
     #[tokio::test]
     async fn test_read_global_config_with_offset() {
         let fs = test_fs();
-        let file = PingFile::GlobalConfig { fs: fs };
+        let file = PingFile::GlobalConfig { fs: fs.clone() };
         let full = file.read(0, 4096).await.unwrap();
         let partial = file.read(5, 4096).await.unwrap();
         assert_eq!(&full[5..], partial);
@@ -863,7 +872,7 @@ mod tests {
     #[tokio::test]
     async fn test_read_global_config_offset_past_end() {
         let fs = test_fs();
-        let file = PingFile::GlobalConfig { fs: fs };
+        let file = PingFile::GlobalConfig { fs: fs.clone() };
         let data = file.read(0, 4096).await.unwrap();
         let len = data.len() as u64;
         let empty = file.read(len, 4096).await.unwrap();
@@ -942,7 +951,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_write_global_config_valid() {
-        let file = PingFile::GlobalConfig { fs: test_fs() };
+        let fs = test_fs();
+        let file = PingFile::GlobalConfig { fs: fs.clone() };
 
         let yaml = "global_timeout_ms: 3000\ntargets:\n  router:\n    addr: 10.0.0.1:22\n";
         let written = file.write(0, yaml.as_bytes()).await.unwrap();
@@ -964,7 +974,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_write_global_config_invalid_yaml() {
-        let file = PingFile::GlobalConfig { fs: test_fs() };
+        let fs = test_fs();
+        let file = PingFile::GlobalConfig { fs: fs.clone() };
 
         let PingFile::GlobalConfig { fs } = &file else {
             panic!()
@@ -980,7 +991,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_write_global_config_empty_targets() {
-        let file = PingFile::GlobalConfig { fs: test_fs() };
+        let fs = test_fs();
+        let file = PingFile::GlobalConfig { fs: fs.clone() };
 
         let yaml = "global_timeout_ms: 5000\ntargets:\n";
         let result = file.write(0, yaml.as_bytes()).await;
@@ -989,7 +1001,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_write_global_config_with_offset_fails() {
-        let file = PingFile::GlobalConfig { fs: test_fs() };
+        let fs = test_fs();
+        let file = PingFile::GlobalConfig { fs: fs.clone() };
 
         let PingFile::GlobalConfig { fs } = &file else {
             panic!()
