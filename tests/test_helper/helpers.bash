@@ -3,7 +3,9 @@
 _setup_file() {
     export BATS_TEST_TIMEOUT=30
     # warmup cargo run build
-    cargo run --bin charlesnetfs -- -h >&2
+    cargo build --bin charlesnetfs
+    [ -f $BATS_TEST_DIRNAME/../target/debug/charlesnetfs ] || exit 1
+    export CHARLESNETFS=$(realpath $BATS_TEST_DIRNAME/../target/debug/charlesnetfs)
 }
 
 common_setup() {
@@ -24,7 +26,7 @@ common_teardown() {
 start_server() {
     local config="${1:-${START_SERVER_CONFIG:-tests/data/config.yaml}}"
     export RUST_LOG=debug
-    cargo run --bin charlesnetfs -- -c "$config" -n "$NAMESPACE" >&2 &
+    $CHARLESNETFS -c "$config" -n "$NAMESPACE" >&2 &
     SERVER_PID=$!
     echo $SERVER_PID >&2
     jobs >&2
@@ -51,7 +53,7 @@ wait_for_socket() {
         test -S "$NAMESPACE/charlesnetfs" && return 0
         echo "No socket at path $NAMESPACE/charlesnetfs" >&2
         ls -l "$NAMESPACE" >&2
-        sleep 1
+        sleep 0.25
     done
     return 1
 }

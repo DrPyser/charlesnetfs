@@ -123,8 +123,8 @@ targets:
     start_server
     wait_for_socket
 
-    kill -INT $(cat "$TMPDIR/charlesnetfs.pid")
-    wait $(cat "$TMPDIR/charlesnetfs.pid") >&2
+    kill -INT $(cat "$BATS_TEST_TMPDIR/charlesnetfs.pid")
+    wait $(cat "$BATS_TEST_TMPDIR/charlesnetfs.pid") >&2
 
     [ ! -e "$NAMESPACE/charlesnetfs" ]
 }
@@ -209,8 +209,8 @@ EOF
     start_server
     wait_for_socket
 
-    kill -TERM $(cat "$TMPDIR/charlesnetfs.pid")
-    wait $(cat "$TMPDIR/charlesnetfs.pid") >&2
+    kill -TERM $(cat "$BATS_TEST_TMPDIR/charlesnetfs.pid")
+    wait $(cat "$BATS_TEST_TMPDIR/charlesnetfs.pid") >&2
 
     [ ! -e "$NAMESPACE/charlesnetfs" ]
 }
@@ -220,8 +220,8 @@ EOF
     wait_for_socket
     mount_fuse
 
-    kill -INT $(cat "$TMPDIR/charlesnetfs.pid")
-    wait $(cat "$TMPDIR/charlesnetfs.pid") >&2
+    kill -INT $(cat "$BATS_TEST_TMPDIR/charlesnetfs.pid")
+    wait $(cat "$BATS_TEST_TMPDIR/charlesnetfs.pid") >&2
 
     [ ! -e "$NAMESPACE/charlesnetfs" ]
 
@@ -235,8 +235,8 @@ EOF
     wait_for_socket
     mount_fuse
 
-    kill -TERM $(cat "$TMPDIR/charlesnetfs.pid")
-    wait $(cat "$TMPDIR/charlesnetfs.pid") >&2
+    kill -TERM $(cat "$BATS_TEST_TMPDIR/charlesnetfs.pid")
+    wait $(cat "$BATS_TEST_TMPDIR/charlesnetfs.pid") >&2
 
     [ ! -e "$NAMESPACE/charlesnetfs" ]
 
@@ -249,15 +249,15 @@ EOF
     start_server
     wait_for_socket
 
-    kill -TERM $(cat "$TMPDIR/charlesnetfs.pid")
+    kill -TERM $(cat "$BATS_TEST_TMPDIR/charlesnetfs.pid")
     sleep 0.2
 
-    if ps -p $(cat "$TMPDIR/charlesnetfs.pid") >&2; then
-        kill -TERM $(cat "$TMPDIR/charlesnetfs.pid")
+    if ps -p $(cat "$BATS_TEST_TMPDIR/charlesnetfs.pid") >&2; then
+        kill -TERM $(cat "$BATS_TEST_TMPDIR/charlesnetfs.pid")
         sleep 0.2
     fi
 
-    wait $(cat "$TMPDIR/charlesnetfs.pid") >&2 || true
+    wait $(cat "$BATS_TEST_TMPDIR/charlesnetfs.pid") >&2 || true
 
     [ ! -e "$NAMESPACE/charlesnetfs" ]
 }
@@ -266,8 +266,8 @@ EOF
     start_server
     wait_for_socket
 
-    kill -INT $(cat "$TMPDIR/charlesnetfs.pid")
-    wait $(cat "$TMPDIR/charlesnetfs.pid") >&2
+    kill -INT $(cat "$BATS_TEST_TMPDIR/charlesnetfs.pid")
+    wait $(cat "$BATS_TEST_TMPDIR/charlesnetfs.pid") >&2
 
     [ ! -e "$NAMESPACE/charlesnetfs" ]
 }
@@ -276,8 +276,8 @@ EOF
     start_server
     wait_for_socket
 
-    kill -TERM $(cat "$TMPDIR/charlesnetfs.pid")
-    wait $(cat "$TMPDIR/charlesnetfs.pid") >&2
+    kill -TERM $(cat "$BATS_TEST_TMPDIR/charlesnetfs.pid")
+    wait $(cat "$BATS_TEST_TMPDIR/charlesnetfs.pid") >&2
 
     [ ! -e "$NAMESPACE/charlesnetfs" ]
 }
@@ -286,14 +286,14 @@ EOF
     start_server
     wait_for_socket
 
-    kill -INT $(cat "$TMPDIR/charlesnetfs.pid")
+    kill -INT $(cat "$BATS_TEST_TMPDIR/charlesnetfs.pid")
     sleep 0.2
 
-    if ps -p $(cat "$TMPDIR/charlesnetfs.pid") >&2; then
-        kill -TERM $(cat "$TMPDIR/charlesnetfs.pid")
+    if ps -p $(cat "$BATS_TEST_TMPDIR/charlesnetfs.pid") >&2; then
+        kill -TERM $(cat "$BATS_TEST_TMPDIR/charlesnetfs.pid")
     fi
 
-    wait $(cat "$TMPDIR/charlesnetfs.pid") >&2 || true
+    wait $(cat "$BATS_TEST_TMPDIR/charlesnetfs.pid") >&2 || true
 
     [ ! -e "$NAMESPACE/charlesnetfs" ]
 }
