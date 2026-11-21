@@ -9,6 +9,8 @@ let
     plan9port
     rustup
     fossil
+    # github action local runner
+    act
   ];
 
   rustupHome = "$PWD/.rustup";
