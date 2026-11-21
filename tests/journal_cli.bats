@@ -13,6 +13,14 @@ setup_file() {
     start_journald_gateway "$JOURNALD_CONTAINER"
 }
 
+teardown() {
+    # Kill leftover follow process (timeout forwards to cargo + journal)
+    if [ -f "$BATS_TEST_TMPDIR/follow.pid" ]; then
+        kill -TERM $(cat "$BATS_TEST_TMPDIR/follow.pid") 2>/dev/null || true
+        rm -f "$BATS_TEST_TMPDIR/follow.pid"
+    fi
+}
+
 teardown_file() {
     stop_journald_gateway "$JOURNALD_CONTAINER"
 }
@@ -46,15 +54,16 @@ log_to_journal() {
 
 @test "journal cli follow blocks to wait for log lines" {
     OUTPUT=$BATS_TEST_TMPDIR/output
-    $JOURNAL_CLI --follow localhost $GATEWAY_PORT >"$OUTPUT" &
+    # timeout wraps cargo+journal — killing timeout PID kills the whole tree
+    timeout 30 $JOURNAL_CLI --follow localhost $GATEWAY_PORT >"$OUTPUT" 2>/dev/null &
     FOLLOWPID=$!
-    trap "kill $FOLLOWPID" EXIT
+    echo $FOLLOWPID > "$BATS_TEST_TMPDIR/follow.pid"
     sleep 0.5
     # check that the process is still running
     assert kill -0 "$FOLLOWPID"
 
     # push some log entries
     log_to_journal "test message from bats"
-    run wait_for $OUTPUT 'test message from bats' >&2
+    run timeout 5 grep -m 1 'test message from bats' <(tail -f "$OUTPUT" 2>/dev/null)
     assert_success
 }
