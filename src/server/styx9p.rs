@@ -263,14 +263,9 @@ impl PingFS {
     }
 }
 
-/// One open fid: per-open state lives here.
-/// Each `open()` creates an independent instance.
 #[derive(Debug)]
 pub enum PingFile {
-    /// Per-open ping probe: independent counter and last-result cache.
-    /// `counter` and `last_result` are only touched in the sync portion of
-    /// `File::read` (before the blocking `pinger::ping` call); never held
-    /// across an `.await`.
+    /// Per-open ping probe: independent counter
     Ping {
         target_name: String,
         counter: AtomicU64,
@@ -416,21 +411,10 @@ impl File for PingFile {
                 Ok(read_at(yaml.as_bytes(), offset, count))
             }
 
-            PingFile::Journal { target_name, fs } => {
-                let config = fs.config.read().unwrap();
-                let target = config
-                    .targets
-                    .get(target_name.as_str())
-                    .ok_or_else(|| Error::new("target not found"))?;
-
-                let _port = target.journal_port();
-                let _host = target.addr.host().to_owned();
-
-                // TODO: async journal follow
-                // let msg = format!("journal not yet implemented for {}\n", target_name);
-                // Ok(read_at(msg.as_bytes(), offset, count))
-                Err(Error::from(errors::UNSUPPORTED))
-            }
+            PingFile::Journal {
+                target_name: _,
+                fs: _,
+            } => Err(Error::from(errors::UNSUPPORTED)),
 
             PingFile::GlobalConfig { fs } => {
                 let config = fs.config.read().unwrap();
