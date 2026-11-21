@@ -181,13 +181,13 @@ impl PingFS {
                 Ok(Stat::new(
                     "config",
                     qid,
-                    0o666,
+                    0o644,
                     // TODO: serializing to get size might become costly
                     serde_yaml::to_string(&config).unwrap().len() as u64,
                 ))
             }
-            [name] if self.has_target(name) => Ok(Stat::new(*name, qid, 0o555, 0)),
-            [name, "ping"] if self.has_target(name) => Ok(Stat::new("ping", qid, 0o666, 0)),
+            [name] if self.has_target(name) => Ok(Stat::new(*name, qid, 0o444, 0)),
+            [name, "ping"] if self.has_target(name) => Ok(Stat::new("ping", qid, 0o444, 0)),
             [name, "config"] if self.has_target(name) => {
                 let config = self.config.read().unwrap();
                 let target_config = config.targets.get(*name).unwrap();
@@ -684,8 +684,8 @@ mod tests {
         let stat = fs.stat_qid(Qid::file(QID_CONFIG)).unwrap();
         assert_eq!(stat.name, "config");
         assert!(!stat.qid.is_dir());
-        // Global config is writable (0o666)
-        assert_eq!(stat.mode & 0o666, 0o666);
+        // Global config is writable (0o644)
+        assert_eq!(stat.mode & 0o644, 0o644);
     }
 
     #[test]
