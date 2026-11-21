@@ -29,5 +29,6 @@ in pkgs.mkShell {
     rustup default stable
   fi
   rustup component add rust-analyzer 2>/dev/null
+  command -v bats rustc cargo act 9
   '';
 }
