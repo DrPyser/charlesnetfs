@@ -1,9 +1,8 @@
 # { pkgs ? (import (fetchTarball "https://github.com/NixOS/nixpkgs/archive/master.tar.gz") {})}:
-{ pkgs ? (import <nixpkgs> { }) }:
+{ pkgs ? (import <nixpkgs> { }), withFuse ? true }:
 
 let
   basePackages = with pkgs; [
-    fuse
     pkg-config
     jq
     plan9port
@@ -17,7 +16,8 @@ let
   cargoHome = "$PWD/.cargo";
 
 in pkgs.mkShell {
-  buildInputs = basePackages;
+  # omit fuse to reuse fusermount3 from environment
+  buildInputs = basePackages ++ (if withFuse then with pkgs; [ fuse ] else []);
   RUST_BACKTRACE = "1";
   RUST_LOG = "debug";
   shellHook = ''
@@ -29,6 +29,6 @@ in pkgs.mkShell {
     rustup default stable
   fi
   rustup component add rust-analyzer 2>/dev/null
-  command -v bats rustc cargo act 9
+  command -v bats rustc cargo act 9 fusermount3 >&2
   '';
 }

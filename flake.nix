@@ -18,6 +18,7 @@
         in
         {
           default = import ./shell.nix { inherit pkgs; };
+          github = import ./shell.nix { inherit pkgs; withFuse = false; };
         }
       );
     };
