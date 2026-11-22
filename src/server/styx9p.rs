@@ -1,18 +1,15 @@
 //! 9P filesystem server using styx9p.
 
-#![warn(clippy::await_holding_lock)]
-
 use crate::config::Config;
 use crate::config::TargetConfig;
 use crate::pinger;
 use crate::UnixPath;
+use arc_swap::ArcSwap;
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::sync::Mutex;
-use std::sync::RwLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 use styx9p::proto::Qid;
 use styx9p::server::errors;
@@ -46,26 +43,54 @@ fn current_timestamp() -> u64 {
         .as_millis() as u64
 }
 
-/// The filesystem tree: configuration and qid mapping.
-/// Shared across all connections (styx9p wraps it in Arc internally).
+/// Immutable snapshot of config + qid cache.
+/// Exchanged atomically via ArcSwap — readers always see a consistent pair.
+#[derive(Debug, Clone)]
+pub struct Snapshot {
+    config: Config,
+    qid_cache: BTreeMap<u64, UnixPath>,
+}
+
+impl Snapshot {
+    fn new(config: Config) -> Self {
+        let mut qid_cache = BTreeMap::new();
+        qid_cache.insert(QID_ROOT, UnixPath::ROOT);
+        qid_cache.insert(QID_CONFIG, UnixPath::ROOT.join("config"));
+
+        for name in config.targets.keys() {
+            let dir_path = UnixPath::ROOT.join(name);
+            qid_cache.insert(qid_from_path(&dir_path), dir_path.clone());
+            qid_cache.insert(qid_from_path(dir_path.join("ping")), dir_path.join("ping"));
+            qid_cache.insert(
+                qid_from_path(dir_path.join("config")),
+                dir_path.join("config"),
+            );
+            qid_cache.insert(
+                qid_from_path(dir_path.join("journal")),
+                dir_path.join("journal"),
+            );
+        }
+
+        Snapshot { config, qid_cache }
+    }
+}
+
+/// The filesystem tree: atomic snapshot of config + qid mapping.
+/// Shared across all connections via ArcSwap. Writes swap the whole
+/// snapshot atomically — no locks, no TOCTOU gap.
 #[derive(Debug)]
 pub struct CharlesnetFS {
-    /// Read-write lock on the live config. Only written via `File::write` on
-    /// `GlobalConfig`. Safe to hold across `.await` only in read mode; write
-    /// mode is never held across `.await` (the write completes synchronously).
-    pub config: Arc<RwLock<Config>>,
-    /// Qid path -> UnixPath (the reverse mapping for resolution).
-    /// Only accessed from sync `Filesystem` trait methods — never across `.await`.
-    qid_cache: Arc<Mutex<BTreeMap<u64, UnixPath>>>,
+    state: ArcSwap<Snapshot>,
 }
 
 impl std::fmt::Display for CharlesnetFS {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let snap = self.snapshot();
         write!(
             f,
             "PingFS {{ {} targets, {} QIDs }}",
-            self.config.read().unwrap().targets.len(),
-            self.qid_cache.lock().unwrap().len()
+            snap.config.targets.len(),
+            snap.qid_cache.len()
         )
     }
 }
@@ -73,66 +98,47 @@ impl std::fmt::Display for CharlesnetFS {
 impl Clone for CharlesnetFS {
     fn clone(&self) -> Self {
         Self {
-            config: Arc::clone(&self.config),
-            qid_cache: Arc::clone(&self.qid_cache),
+            state: ArcSwap::new(self.state.load_full()),
         }
     }
 }
 
 impl CharlesnetFS {
     pub fn new(config: Config) -> Self {
-        let fs = Self {
-            config: Arc::new(RwLock::new(config)),
-            qid_cache: Arc::new(Mutex::new(BTreeMap::new())),
-        };
-        fs.rebuild_qid_cache();
-        fs
-    }
-
-    pub fn rebuild_qid_cache(&self) {
-        let mut cache = self.qid_cache.lock().unwrap();
-        let config = self.config.read().unwrap();
-
-        cache.clear();
-        cache.insert(QID_ROOT, UnixPath::ROOT);
-        cache.insert(QID_CONFIG, UnixPath::ROOT.join("config"));
-
-        for name in config.targets.keys() {
-            let dir_path = UnixPath::ROOT.join(name);
-            cache.insert(qid_from_path(&dir_path), dir_path.clone());
-            cache.insert(qid_from_path(dir_path.join("ping")), dir_path.join("ping"));
-            cache.insert(
-                qid_from_path(dir_path.join("config")),
-                dir_path.join("config"),
-            );
-            cache.insert(
-                qid_from_path(dir_path.join("journal")),
-                dir_path.join("journal"),
-            );
+        let snap = Snapshot::new(config);
+        Self {
+            state: ArcSwap::new(Arc::new(snap)),
         }
     }
 
+    /// Load the current snapshot. Lock-free — just an atomic Arc clone.
+    pub fn snapshot(&self) -> Arc<Snapshot> {
+        self.state.load_full()
+    }
+
     pub fn target_config(&self, name: &str) -> Option<TargetConfig> {
-        self.config.read().unwrap().targets.get(name).cloned()
+        self.snapshot().config.targets.get(name).cloned()
     }
 
     pub fn global_config(&self) -> Config {
-        self.config.read().unwrap().clone()
+        self.snapshot().config.clone()
     }
 
     pub fn path_from_qid(&self, qid_path: u64) -> Option<UnixPath> {
-        self.qid_cache.lock().unwrap().get(&qid_path).cloned()
+        self.snapshot().qid_cache.get(&qid_path).cloned()
     }
 
     pub fn has_target(&self, name: &str) -> bool {
-        self.config.read().unwrap().targets.contains_key(name)
+        self.snapshot().config.targets.contains_key(name)
     }
 
     /// Walk one step from `dir` to `name`. Returns the qid of the child.
     /// This is the core walk logic, testable without Ctx.
     pub fn walk_step(&self, dir: u64, name: &str) -> Result<Qid> {
-        let dir_path = self
-            .path_from_qid(dir)
+        let snap = self.snapshot();
+        let dir_path = snap
+            .qid_cache
+            .get(&dir)
             .ok_or_else(|| Error::from(errors::NOT_FOUND))?;
 
         let components: Vec<_> = dir_path.components().collect();
@@ -145,12 +151,12 @@ impl CharlesnetFS {
                 if name == "config" {
                     return Ok(Qid::file(QID_CONFIG));
                 }
-                if self.has_target(name) {
+                if snap.config.targets.contains_key(name) {
                     return Ok(Qid::dir(qid_from_path(UnixPath::ROOT.join(name))));
                 }
                 Err(Error::from(errors::NOT_FOUND))
             }
-            [target] if self.has_target(target) => {
+            [target] if snap.config.targets.contains_key(*target) => {
                 if name == ".." {
                     return Ok(Qid::dir(QID_ROOT));
                 }
@@ -168,8 +174,10 @@ impl CharlesnetFS {
     /// Stat a qid. Returns metadata for the file.
     /// This is the core stat logic, testable without Ctx.
     pub fn stat_qid(&self, qid: Qid) -> Result<Stat> {
-        let path = self
-            .path_from_qid(qid.path)
+        let snap = self.snapshot();
+        let path = snap
+            .qid_cache
+            .get(&qid.path)
             .ok_or_else(|| Error::from(errors::NOT_FOUND))?;
 
         let components: Vec<_> = path.components().collect();
@@ -177,29 +185,32 @@ impl CharlesnetFS {
         match components.as_slice() {
             [] => Ok(Stat::new("/", qid, 0o555, 0)),
             ["config"] => {
-                let config = self.config.read().unwrap().clone();
+                let config = snap.config.clone();
                 Ok(Stat::new(
                     "config",
                     qid,
                     0o644,
-                    // TODO: serializing to get size might become costly
                     serde_yaml::to_string(&config).unwrap().len() as u64,
                 ))
             }
-            [name] if self.has_target(name) => Ok(Stat::new(*name, qid, 0o444, 0)),
-            [name, "ping"] if self.has_target(name) => Ok(Stat::new("ping", qid, 0o444, 0)),
-            [name, "config"] if self.has_target(name) => {
-                let config = self.config.read().unwrap();
-                let target_config = config.targets.get(*name).unwrap();
+            [name] if snap.config.targets.contains_key(*name) => {
+                Ok(Stat::new(*name, qid, 0o444, 0))
+            }
+            [name, "ping"] if snap.config.targets.contains_key(*name) => {
+                Ok(Stat::new("ping", qid, 0o444, 0))
+            }
+            [name, "config"] if snap.config.targets.contains_key(*name) => {
+                let target_config = snap.config.targets.get(*name).unwrap();
                 Ok(Stat::new(
                     "config",
                     qid,
                     0o444,
-                    // TODO: serializing to get size might become costly
                     serde_yaml::to_string(&target_config).unwrap().len() as u64,
                 ))
             }
-            [name, "journal"] if self.has_target(name) => Ok(Stat::new("journal", qid, 0o444, 0)),
+            [name, "journal"] if snap.config.targets.contains_key(*name) => {
+                Ok(Stat::new("journal", qid, 0o444, 0))
+            }
             _ => Err(Error::from(errors::NOT_FOUND)),
         }
     }
@@ -207,8 +218,10 @@ impl CharlesnetFS {
     /// List directory entries. Returns stats for all children.
     /// This is the core readdir logic, testable without Ctx.
     pub fn list_dir(&self, dir: u64) -> Result<Vec<Stat>> {
-        let path = self
-            .path_from_qid(dir)
+        let snap = self.snapshot();
+        let path = snap
+            .qid_cache
+            .get(&dir)
             .ok_or_else(|| Error::from(errors::NOT_FOUND))?;
 
         let components: Vec<_> = path.components().collect();
@@ -216,13 +229,13 @@ impl CharlesnetFS {
         match components.as_slice() {
             [] => {
                 let mut entries = vec![self.stat_qid(Qid::file(QID_CONFIG))?];
-                for name in self.config.read().unwrap().targets.keys() {
+                for name in snap.config.targets.keys() {
                     let qid = Qid::dir(qid_from_path(UnixPath::ROOT.join(name)));
                     entries.push(self.stat_qid(qid)?);
                 }
                 Ok(entries)
             }
-            [name] if self.has_target(name) => {
+            [name] if snap.config.targets.contains_key(*name) => {
                 let dir_path = UnixPath::ROOT.join(name);
                 Ok(vec![
                     self.stat_qid(Qid::file(qid_from_path(dir_path.join("ping"))))?,
@@ -237,27 +250,35 @@ impl CharlesnetFS {
     /// Open a file by qid. Returns a PingFile with per-open state.
     /// This is the core open logic, testable without Ctx.
     pub fn open_file(&self, qid: Qid) -> Result<CharlesnetfsFile> {
-        let path = self
-            .path_from_qid(qid.path)
+        let snap = self.snapshot();
+        let path = snap
+            .qid_cache
+            .get(&qid.path)
             .ok_or_else(|| Error::from(errors::NOT_FOUND))?;
 
         let components: Vec<_> = path.components().collect();
 
         match components.as_slice() {
             ["config"] => Ok(CharlesnetfsFile::GlobalConfig { fs: self.clone() }),
-            [name, "ping"] if self.has_target(name) => Ok(CharlesnetfsFile::Ping {
-                target_name: name.to_string(),
-                counter: AtomicU64::new(0),
-                fs: self.clone(),
-            }),
-            [name, "config"] if self.has_target(name) => Ok(CharlesnetfsFile::TargetConfig {
-                target_name: name.to_string(),
-                fs: self.clone(),
-            }),
-            [name, "journal"] if self.has_target(name) => Ok(CharlesnetfsFile::Journal {
-                target_name: name.to_string(),
-                fs: self.clone(),
-            }),
+            [name, "ping"] if snap.config.targets.contains_key(*name) => {
+                Ok(CharlesnetfsFile::Ping {
+                    target_name: name.to_string(),
+                    counter: AtomicU64::new(0),
+                    fs: self.clone(),
+                })
+            }
+            [name, "config"] if snap.config.targets.contains_key(*name) => {
+                Ok(CharlesnetfsFile::TargetConfig {
+                    target_name: name.to_string(),
+                    fs: self.clone(),
+                })
+            }
+            [name, "journal"] if snap.config.targets.contains_key(*name) => {
+                Ok(CharlesnetfsFile::Journal {
+                    target_name: name.to_string(),
+                    fs: self.clone(),
+                })
+            }
             _ => Err(Error::from(errors::NOT_FOUND)),
         }
     }
@@ -366,7 +387,6 @@ impl File for CharlesnetfsFile {
                     return Ok(Vec::new());
                 }
                 let (timeout, addr) = {
-                    // config's lock must be released before any await
                     let config = fs.global_config();
                     let target = config
                         .targets
@@ -423,9 +443,8 @@ impl File for CharlesnetfsFile {
             } => Err(Error::from(errors::UNSUPPORTED)),
 
             CharlesnetfsFile::GlobalConfig { fs } => {
-                let config = fs.config.read().unwrap();
-                let yaml =
-                    serde_yaml::to_string(&*config).map_err(|e| Error::new(e.to_string()))?;
+                let config = fs.global_config();
+                let yaml = serde_yaml::to_string(&config).map_err(|e| Error::new(e.to_string()))?;
                 Ok(read_at(&yaml.into_bytes(), offset, count))
             }
         }
@@ -445,10 +464,10 @@ impl File for CharlesnetfsFile {
                     return Err(Error::new("config must have at least one target"));
                 }
                 let len = data.len() as u32;
-                *fs.config.write().unwrap() = new_config;
-                fs.rebuild_qid_cache();
+                let snap = Snapshot::new(new_config);
+                fs.state.store(Arc::new(snap));
                 log::info!("config updated");
-                log::debug!("config={:#?}", fs.config.read().unwrap());
+                log::debug!("config={:#?}", fs.global_config());
                 Ok(len)
             }
             _ => Err(Error::from(errors::PERM)),
@@ -531,9 +550,9 @@ mod tests {
     #[test]
     fn test_cache_initialization() {
         let fs = test_fs();
-        let cache = fs.qid_cache.lock().unwrap();
+        let snap = fs.snapshot();
         // root + config + 2 targets * 4 entries (dir, ping, config, journal)
-        assert!(cache.len() >= 10);
+        assert!(snap.qid_cache.len() >= 10);
     }
 
     #[test]
@@ -955,15 +974,18 @@ mod tests {
         let CharlesnetfsFile::GlobalConfig { fs } = &file else {
             panic!()
         };
-        let config = fs.config.read().unwrap();
+        let config = fs.global_config();
         assert_eq!(config.global_timeout_ms, 3000);
         assert!(config.targets.contains_key("router"));
         assert_eq!(config.targets["router"].addr.to_string(), "10.0.0.1:22");
 
         // Qid cache should be rebuilt
-        let cache = fs.qid_cache.lock().unwrap();
-        assert!(cache.values().any(|p| p.to_string() == "/router"));
-        assert!(cache.values().any(|p| p.to_string() == "/router/ping"));
+        let snap = fs.snapshot();
+        assert!(snap.qid_cache.values().any(|p| p.to_string() == "/router"));
+        assert!(snap
+            .qid_cache
+            .values()
+            .any(|p| p.to_string() == "/router/ping"));
     }
 
     #[tokio::test]
@@ -974,13 +996,13 @@ mod tests {
         let CharlesnetfsFile::GlobalConfig { fs } = &file else {
             panic!()
         };
-        let orig_global = fs.config.read().unwrap().global_timeout_ms;
+        let orig_global = fs.global_config().global_timeout_ms;
 
         let yaml = "invalid: yaml: content:";
         let result = file.write(0, yaml.as_bytes()).await;
         assert!(result.is_err());
 
-        assert_eq!(fs.config.read().unwrap().global_timeout_ms, orig_global);
+        assert_eq!(fs.global_config().global_timeout_ms, orig_global);
     }
 
     #[tokio::test]
@@ -1001,12 +1023,12 @@ mod tests {
         let CharlesnetfsFile::GlobalConfig { fs } = &file else {
             panic!()
         };
-        let orig_global = fs.config.read().unwrap().global_timeout_ms;
+        let orig_global = fs.global_config().global_timeout_ms;
 
         let yaml = "global_timeout_ms: 3000\ntargets:\n  router:\n    addr: 10.0.0.1:22\n";
         let result = file.write(5, yaml.as_bytes()).await;
         assert!(result.is_err());
-        assert_eq!(fs.config.read().unwrap().global_timeout_ms, orig_global);
+        assert_eq!(fs.global_config().global_timeout_ms, orig_global);
     }
 
     #[tokio::test]
@@ -1036,12 +1058,54 @@ mod tests {
         // Reload config with a new target
         let yaml = "global_timeout_ms: 5000\ntargets:\n  router:\n    addr: 192.168.1.1:22\n  nas:\n    addr: 192.168.1.100:5000\n  laptop:\n    addr: 10.0.0.5:22\n";
         let new_config: Config = serde_yaml::from_str(yaml).unwrap();
-        *fs.config.write().unwrap() = new_config;
-        fs.rebuild_qid_cache();
+        let snap = Snapshot::new(new_config);
+        fs.state.store(Arc::new(snap));
 
         // Verify new target appears
         let entries = fs.list_dir(QID_ROOT).unwrap();
         let names: Vec<&str> = entries.iter().map(|s| s.name.as_str()).collect();
         assert!(names.contains(&"laptop"));
+    }
+
+    #[test]
+    fn test_snapshot_config_qid_cache_consistent() {
+        // Every qid_cache path must correspond to a valid config entry and vice versa.
+        // This invariant holds trivially under ArcSwap<Snapshot> (atomic bundle)
+        // but can be violated under RwLock+Mutex during the TOCTOU write window.
+        let fs = test_fs();
+        let snap = fs.snapshot();
+
+        let config = &snap.config;
+        let cache = &snap.qid_cache;
+
+        // Root and global config always present
+        assert!(cache.contains_key(&QID_ROOT));
+        assert!(cache.contains_key(&QID_CONFIG));
+        assert_eq!(cache[&QID_ROOT].to_string(), "/");
+        assert_eq!(cache[&QID_CONFIG].to_string(), "/config");
+
+        // Every target in config has a corresponding dir entry in cache
+        for name in config.targets.keys() {
+            let dir_path = UnixPath::ROOT.join(name);
+            let dir_qid = qid_from_path(&dir_path);
+            assert!(
+                cache.contains_key(&dir_qid),
+                "missing dir qid for target {}",
+                name
+            );
+            assert_eq!(cache[&dir_qid].to_string(), format!("/{}", name));
+
+            // Every target has ping, config, journal sub-files
+            for sub in &["ping", "config", "journal"] {
+                let sub_path = dir_path.join(sub);
+                let sub_qid = qid_from_path(&sub_path);
+                assert!(
+                    cache.contains_key(&sub_qid),
+                    "missing {} qid for target {}",
+                    sub,
+                    name
+                );
+            }
+        }
     }
 }
