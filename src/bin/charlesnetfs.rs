@@ -74,7 +74,7 @@ async fn main() -> io::Result<()> {
     }
 
     let listener = tokio::net::UnixListener::bind(&socket_path)?;
-    let fs = server::styx9p::PingFS::new(config);
+    let fs = server::styx9p::CharlesnetFS::new(config);
     let server = styx9p::Server::new(fs);
 
     let serve = tokio::spawn(async move { server.serve_unix(listener).await });
