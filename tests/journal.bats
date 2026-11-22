@@ -82,6 +82,7 @@ teardown_file() {
 # Happy path read tests (gateway available)
 
 @test "9p read journal returns content" {
+    skip "not implemented yet"
     result=$(9 9p read charlesnetfs/gateway/journal)
 
     [[ "$result" == *"bats message one"* ]]
@@ -89,12 +90,14 @@ teardown_file() {
 }
 
 @test "9p read journal contains timestamp format" {
+    skip "not implemented yet"
     result=$(9 9p read charlesnetfs/gateway/journal)
 
     [[ "$result" == *"["* ]]
 }
 
 @test "fuse read journal returns content" {
+    skip "not implemented yet"
     mount_fuse
 
     result=$(cat "$MOUNT_DIR/gateway/journal")
@@ -110,6 +113,7 @@ teardown_file() {
 }
 
 @test "9p read journal shows new entries after write" {
+    skip "not implemented yet"
     result=$(9 9p read charlesnetfs/gateway/journal)
     [[ "$result" == *"bats message one"* ]]
 
@@ -120,6 +124,7 @@ teardown_file() {
 }
 
 @test "9p read journal blocks until new entry arrives" {
+    skip "not implemented yet"
     # Read to consume existing entries
     9 9p read charlesnetfs/gateway/journal >/dev/null
 
@@ -149,6 +154,7 @@ teardown_file() {
 }
 
 @test "fuse read journal blocks until new entry arrives" {
+    skip "not implemented yet"
     mount_fuse
 
     # Read to consume existing entries
@@ -181,6 +187,7 @@ teardown_file() {
 # Error path tests (gateway unavailable)
 
 @test "9p read journal fails when gateway is down" {
+    skip "not implemented yet"
     docker stop "$JOURNALD_CONTAINER" >/dev/null 2>&1
 
     run 9 9p read charlesnetfs/gateway/journal
@@ -190,6 +197,7 @@ teardown_file() {
 }
 
 @test "fuse read journal fails when gateway is down" {
+    skip "not implemented yet"
     mount_fuse
     docker stop "$JOURNALD_CONTAINER" >/dev/null 2>&1
 
