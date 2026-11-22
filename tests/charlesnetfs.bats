@@ -60,6 +60,8 @@ teardown() {
 @test "read reachable target ping file" {
     start_server
     wait_for_socket
+    ping_port=$(yq -r '.targets.localhost.addr' < $BATS_TEST_DIRNAME/data/config.yaml | cut -d':' -f2)
+    { ss -tln | grep -q ":$ping_port"; } || start_tcp_listener $ping_port >&2
 
     run 9 9p read charlesnetfs/localhost/ping
 

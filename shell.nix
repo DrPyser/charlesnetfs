@@ -5,6 +5,7 @@ let
   basePackages = with pkgs; [
     pkg-config
     jq
+    yq
     plan9port
     rustup
     fossil

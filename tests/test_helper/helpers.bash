@@ -16,11 +16,24 @@ common_setup() {
 }
 
 common_teardown() {
+    local pidfile pid
+
     stop_server || true
     sleep 0.5
     if mountpoint -q "$MOUNT_DIR" 2>/dev/null; then
         fusermount -u "$MOUNT_DIR" 2>/dev/null || true
     fi
+
+    # terminate any process registered in pid files
+    for pidfile in $(find $BATS_TEST_TMPDIR -name '*.pid'); do
+        pid=$(cat "$pidfile")
+        for sig in INT TERM KILL; do
+            kill -0 $pid || break
+            kill -$sig $pid >&2
+            sleep 0.5 &
+            wait -n $! $pid
+        done
+    done
 }
 
 start_server() {
@@ -103,3 +116,18 @@ wait_for() {
 
     timeout "$timeout" grep -m 1 "$pattern" <(tail -f "$file")
 }
+
+available_tcp_port(){
+    comm -23 <(seq 10000 65535 | sort) <(ss -tln | awk '{print $4}' | grep -oP '\d+$' | sort -u) | head -1
+}
+
+start_tcp_listener() {
+    # find an open port
+    local listener_pid port=$1
+    9 listen1 -v 'tcp!localhost!'$port echo hello >&2 3<&- &
+    listener_pid=$!
+    echo "started listener on port $port pid=$listener_pid" >&2
+    echo $listener_pid > "$BATS_TEST_TMPDIR/listener.pid"
+    while ! ss -tln | grep -q ":$port"; do sleep 0.25; done
+}
+
