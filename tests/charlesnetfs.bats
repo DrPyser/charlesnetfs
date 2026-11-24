@@ -102,23 +102,24 @@ teardown() {
     start_server
     wait_for_socket
 
-    result=$(9 9p ls charlesnetfs/)
-    [[ "$result" == *"router"* ]]
-    [[ "$result" == *"nas"* ]]
-    [[ "$result" == *"localhost"* ]]
+    run 9 9p ls charlesnetfs/
+    [[ "$output" =~ "router" ]]
+    [[ "$output" =~ "nas" ]]
+    [[ "$output" =~ "localhost" ]]
 
     new_config="global_timeout_ms: 3000
 targets:
   newhost:
     addr: 10.0.0.99:22
 "
-    echo "$new_config" | 9 9p write charlesnetfs/config
+    run bats_pipe echo "$new_config" \| 9 9p write charlesnetfs/config
+    [ $status -eq 0 ]
 
-    result=$(9 9p ls charlesnetfs/)
-    [[ "$result" == *"newhost"* ]]
-    [[ "$result" != *"router"* ]]
-    [[ "$result" != *"nas"* ]]
-    [[ "$result" != *"localhost"* ]]
+    run 9 9p ls charlesnetfs/
+    [[ "$output" == *"newhost"* ]]
+    [[ "$output" != *"router"* ]]
+    [[ "$output" != *"nas"* ]]
+    [[ "$output" != *"localhost"* ]]
 }
 
 @test "server shutdown cleans up socket" {

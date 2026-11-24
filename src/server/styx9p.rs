@@ -43,34 +43,41 @@ fn current_timestamp() -> u64 {
         .as_millis() as u64
 }
 
-/// Immutable snapshot of config + qid cache.
+pub type QIDCache = BTreeMap<u64, UnixPath>;
+
+/// this function encode the statically configured namespace structure
+fn build_qid_cache(config: &Config) -> QIDCache {
+    let mut qid_cache = BTreeMap::new();
+
+    qid_cache.insert(QID_ROOT, UnixPath::ROOT);
+    qid_cache.insert(QID_CONFIG, UnixPath::ROOT.join("config"));
+
+    for name in config.targets.keys() {
+        let dir_path = UnixPath::ROOT.join(name);
+        qid_cache.insert(qid_from_path(&dir_path), dir_path.clone());
+        qid_cache.insert(qid_from_path(dir_path.join("ping")), dir_path.join("ping"));
+        qid_cache.insert(
+            qid_from_path(dir_path.join("config")),
+            dir_path.join("config"),
+        );
+        qid_cache.insert(
+            qid_from_path(dir_path.join("journal")),
+            dir_path.join("journal"),
+        );
+    }
+    qid_cache
+}
+
 /// Exchanged atomically via ArcSwap — readers always see a consistent pair.
 #[derive(Debug, Clone)]
 pub struct Snapshot {
     config: Config,
-    qid_cache: BTreeMap<u64, UnixPath>,
+    qid_cache: QIDCache,
 }
 
 impl Snapshot {
     fn new(config: Config) -> Self {
-        let mut qid_cache = BTreeMap::new();
-        qid_cache.insert(QID_ROOT, UnixPath::ROOT);
-        qid_cache.insert(QID_CONFIG, UnixPath::ROOT.join("config"));
-
-        for name in config.targets.keys() {
-            let dir_path = UnixPath::ROOT.join(name);
-            qid_cache.insert(qid_from_path(&dir_path), dir_path.clone());
-            qid_cache.insert(qid_from_path(dir_path.join("ping")), dir_path.join("ping"));
-            qid_cache.insert(
-                qid_from_path(dir_path.join("config")),
-                dir_path.join("config"),
-            );
-            qid_cache.insert(
-                qid_from_path(dir_path.join("journal")),
-                dir_path.join("journal"),
-            );
-        }
-
+        let qid_cache = build_qid_cache(&config);
         Snapshot { config, qid_cache }
     }
 }
@@ -80,7 +87,7 @@ impl Snapshot {
 /// snapshot atomically — no locks, no TOCTOU gap.
 #[derive(Debug)]
 pub struct CharlesnetFS {
-    state: ArcSwap<Snapshot>,
+    state: Arc<ArcSwap<Snapshot>>,
 }
 
 impl std::fmt::Display for CharlesnetFS {
@@ -98,16 +105,16 @@ impl std::fmt::Display for CharlesnetFS {
 impl Clone for CharlesnetFS {
     fn clone(&self) -> Self {
         Self {
-            state: ArcSwap::new(self.state.load_full()),
+            state: Arc::clone(&self.state),
         }
     }
 }
 
 impl CharlesnetFS {
     pub fn new(config: Config) -> Self {
-        let snap = Snapshot::new(config);
+        let snap = Self::build_snapshot(config);
         Self {
-            state: ArcSwap::new(Arc::new(snap)),
+            state: Arc::new(ArcSwap::new(Arc::new(snap))),
         }
     }
 
@@ -116,12 +123,12 @@ impl CharlesnetFS {
         self.state.load_full()
     }
 
-    pub fn target_config(&self, name: &str) -> Option<TargetConfig> {
-        self.snapshot().config.targets.get(name).cloned()
+    pub fn build_snapshot(config: Config) -> Snapshot {
+        Snapshot::new(config)
     }
 
-    pub fn global_config(&self) -> Config {
-        self.snapshot().config.clone()
+    pub fn target_config(&self, name: &str) -> Option<TargetConfig> {
+        self.snapshot().config.targets.get(name).cloned()
     }
 
     pub fn path_from_qid(&self, qid_path: u64) -> Option<UnixPath> {
@@ -185,7 +192,7 @@ impl CharlesnetFS {
         match components.as_slice() {
             [] => Ok(Stat::new("/", qid, 0o555, 0)),
             ["config"] => {
-                let config = snap.config.clone();
+                let config = &snap.config;
                 Ok(Stat::new(
                     "config",
                     qid,
@@ -387,7 +394,7 @@ impl File for CharlesnetfsFile {
                     return Ok(Vec::new());
                 }
                 let (timeout, addr) = {
-                    let config = fs.global_config();
+                    let config = &fs.snapshot().config;
                     let target = config
                         .targets
                         .get(target_name)
@@ -443,7 +450,7 @@ impl File for CharlesnetfsFile {
             } => Err(Error::from(errors::UNSUPPORTED)),
 
             CharlesnetfsFile::GlobalConfig { fs } => {
-                let config = fs.global_config();
+                let config = &fs.snapshot().config;
                 let yaml = serde_yaml::to_string(&config).map_err(|e| Error::new(e.to_string()))?;
                 Ok(read_at(&yaml.into_bytes(), offset, count))
             }
@@ -464,10 +471,14 @@ impl File for CharlesnetfsFile {
                     return Err(Error::new("config must have at least one target"));
                 }
                 let len = data.len() as u32;
-                let snap = Snapshot::new(new_config);
-                fs.state.store(Arc::new(snap));
+
+                // the snapshot is recreated in full, with qid cache rebuilt from new config
+                // TODO: abstract over ArcSwap logic
+                fs.state
+                    .store(Arc::new(CharlesnetFS::build_snapshot(new_config)));
                 log::info!("config updated");
-                log::debug!("config={:#?}", fs.global_config());
+                log::debug!("config={:#?}", &fs.snapshot().config);
+
                 Ok(len)
             }
             _ => Err(Error::from(errors::PERM)),
@@ -974,7 +985,7 @@ mod tests {
         let CharlesnetfsFile::GlobalConfig { fs } = &file else {
             panic!()
         };
-        let config = fs.global_config();
+        let config = &fs.snapshot().config;
         assert_eq!(config.global_timeout_ms, 3000);
         assert!(config.targets.contains_key("router"));
         assert_eq!(config.targets["router"].addr.to_string(), "10.0.0.1:22");
@@ -996,13 +1007,13 @@ mod tests {
         let CharlesnetfsFile::GlobalConfig { fs } = &file else {
             panic!()
         };
-        let orig_global = fs.global_config().global_timeout_ms;
+        let orig_global = fs.snapshot().config.global_timeout_ms;
 
         let yaml = "invalid: yaml: content:";
         let result = file.write(0, yaml.as_bytes()).await;
         assert!(result.is_err());
 
-        assert_eq!(fs.global_config().global_timeout_ms, orig_global);
+        assert_eq!(fs.snapshot().config.global_timeout_ms, orig_global);
     }
 
     #[tokio::test]
@@ -1023,12 +1034,12 @@ mod tests {
         let CharlesnetfsFile::GlobalConfig { fs } = &file else {
             panic!()
         };
-        let orig_global = fs.global_config().global_timeout_ms;
+        let orig_global = fs.snapshot().config.global_timeout_ms;
 
         let yaml = "global_timeout_ms: 3000\ntargets:\n  router:\n    addr: 10.0.0.1:22\n";
         let result = file.write(5, yaml.as_bytes()).await;
         assert!(result.is_err());
-        assert_eq!(fs.global_config().global_timeout_ms, orig_global);
+        assert_eq!(fs.snapshot().config.global_timeout_ms, orig_global);
     }
 
     #[tokio::test]
